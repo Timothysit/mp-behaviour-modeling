@@ -21,6 +21,11 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import ssm
+import sys, os
+sys.path.insert(0, os.path.join(os.getcwd(), "notebooks"))
+from style import (apply_style, plot_choices, CHOICE_COLORS,
+                   STRATEGY_COLORS, STATE_COLORS)
+apply_style()
 ```
 
 ## Load synthetic data
@@ -55,7 +60,6 @@ def make_glmhmm_inputs(df):
 
         bias = np.ones(T)
 
-        # previous choice direction: +1 if R, -1 if L
         prev_dir = np.zeros(T)
         prev_dir[1:] = np.where(agent_choice[:-1] == 1, 1, -1)
 
@@ -116,7 +120,7 @@ for K in num_states_list:
 #| fig-cap: "Log-likelihood (bits/trial) vs number of HMM states."
 fig, ax = plt.subplots(figsize=(5, 3))
 ax.plot(list(log_likelihoods.keys()), list(log_likelihoods.values()),
-        "o-", color="steelblue")
+        "o-", color="#2A9DF4", markersize=6)
 ax.set_xlabel("Number of states K")
 ax.set_ylabel("LL (bits / trial)")
 ax.set_xticks(num_states_list)
@@ -137,11 +141,12 @@ glmhmm = models[best_K]
 weights = -glmhmm.observations.params[:, 0, :]  # (K, input_dim)
 feature_names = ["bias", "prevRewDir", "prevUnrewDir"]
 
-fig, ax = plt.subplots(figsize=(6, 4))
+fig, ax = plt.subplots(figsize=(6, 3.5))
 x = np.arange(len(feature_names))
 width = 0.8 / best_K
 for k in range(best_K):
-    ax.bar(x + k * width, weights[k], width, label=f"State {k}")
+    ax.bar(x + k * width, weights[k], width, label=f"State {k}",
+           color=STATE_COLORS[k], edgecolor="white", linewidth=0.3)
 ax.set_xticks(x + width * (best_K - 1) / 2)
 ax.set_xticklabels(feature_names)
 ax.set_ylabel("Weight (for P(R))")
@@ -151,57 +156,73 @@ plt.tight_layout()
 plt.show()
 ```
 
-## Posterior state probabilities
+## Posterior state probabilities with choice rasters
+
+For each session we show the choice raster on top and the posterior state
+probabilities below.
 
 ```{python}
-#| label: fig-state-probs
-#| fig-cap: "Posterior state probabilities for six example sessions."
+#| label: fig-state-choice-rasters
+#| fig-cap: "Choice rasters (top) and posterior state probabilities (bottom) for four example sessions."
 posterior_probs = [
     glmhmm.expected_states(data=y, input=x)[0]
     for y, x in zip(true_choices, inpts)
 ]
 
-fig, axes = plt.subplots(2, 3, figsize=(12, 5), sharex=True, sharey=True)
-for idx, ax in enumerate(axes.flat):
-    if idx >= len(posterior_probs):
-        ax.set_visible(False)
-        continue
+fig, axes = plt.subplots(8, 1, figsize=(14, 16),
+                         gridspec_kw={"height_ratios": [2, 1] * 4})
+for i in range(4):
+    ax_choice = axes[2 * i]
+    ax_state = axes[2 * i + 1]
+    sess_code = session_codes[i]
+    sess_df = df.loc[df["session_code"] == sess_code].reset_index(drop=True)
+
+    plot_choices(sess_df, shade_strategy=True, fig=fig, ax=ax_choice)
+    ax_choice.set_title(f"Session: {sess_code}", fontsize=9)
+    ax_choice.set_xlabel("")
+
     for k in range(best_K):
-        ax.plot(posterior_probs[idx][:, k], label=f"State {k}", alpha=0.8)
-    ax.set_title(session_codes[idx], fontsize=8)
-    ax.set_ylim(-0.05, 1.05)
-if axes.flat[0].get_legend_handles_labels()[1]:
-    axes.flat[0].legend(fontsize=7, loc="upper right")
-fig.supxlabel("Trial")
-fig.supylabel("P(state)")
+        ax_state.plot(posterior_probs[i][:, k], color=STATE_COLORS[k],
+                      label=f"State {k}", alpha=0.85, lw=1)
+    ax_state.set_ylim(-0.05, 1.05)
+    ax_state.spines["left"].set_bounds(0, 1)
+    ax_state.set_yticks([0, 0.5, 1])
+    ax_state.set_ylabel("P(state)")
+    if i == 0:
+        ax_state.legend(fontsize=7, loc="upper right", ncol=best_K)
+
+axes[-1].set_xlabel("Trial")
 plt.tight_layout()
 plt.show()
 ```
 
-## State occupancy by strategy
+## State occupancy by generating strategy
 
 ```{python}
 #| label: fig-state-occupancy
-#| fig-cap: "Dominant state per session, coloured by generating strategy."
-strategy_per_session = [
-    df.loc[df["session_code"] == sc, "strategy"].iloc[0]
-    for sc in session_codes
-]
+#| fig-cap: "Average state occupancy broken down by the generating strategy."
+strategy_per_trial = df["strategy"].values
+session_boundaries = df.groupby("session_code").cumcount().values
 
-state_occ = np.array([pp.mean(axis=0) for pp in posterior_probs])
-dominant_state = state_occ.argmax(axis=1)
+state_probs_all = np.concatenate(posterior_probs, axis=0)
+dominant = state_probs_all.argmax(axis=1)
 
-fig, ax = plt.subplots(figsize=(6, 4))
-strategies = sorted(set(strategy_per_session))
-colours = {"biased": "tab:blue", "wsls": "tab:orange", "perseverant": "tab:green"}
-for strat in strategies:
-    mask = [s == strat for s in strategy_per_session]
-    counts = np.bincount(dominant_state[mask], minlength=best_K)
-    ax.bar(np.arange(best_K), counts, alpha=0.6, label=strat,
-           color=colours.get(strat))
-ax.set_xlabel("Dominant state")
-ax.set_ylabel("Number of sessions")
-ax.set_xticks(range(best_K))
+strat_state_counts = {}
+for strat in ["biased", "wsls", "perseverant"]:
+    mask = strategy_per_trial == strat
+    counts = np.bincount(dominant[mask], minlength=best_K).astype(float)
+    strat_state_counts[strat] = counts / counts.sum()
+
+fig, ax = plt.subplots(figsize=(6, 3.5))
+x = np.arange(best_K)
+width = 0.25
+for i, strat in enumerate(["biased", "wsls", "perseverant"]):
+    ax.bar(x + i * width, strat_state_counts[strat], width,
+           label=strat, color=STRATEGY_COLORS[strat],
+           edgecolor="white", linewidth=0.3)
+ax.set_xticks(x + width)
+ax.set_xticklabels([f"State {k}" for k in range(best_K)])
+ax.set_ylabel("Proportion of trials")
 ax.legend()
 plt.tight_layout()
 plt.show()

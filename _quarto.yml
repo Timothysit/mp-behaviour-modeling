@@ -6,6 +6,7 @@ project:
     - notebooks/01_synthetic_data.qmd
     - notebooks/02_glm_hmm.qmd
     - notebooks/03_qlearning.qmd
+    - notebooks/04_model_comparison.qmd
 
 website:
   title: "Modelling Behaviour in Matching Pennies"
@@ -19,6 +20,8 @@ website:
         text: GLM-HMM
       - href: notebooks/03_qlearning.qmd
         text: Q-Learning
+      - href: notebooks/04_model_comparison.qmd
+        text: Model Comparison
 
 format:
   html:

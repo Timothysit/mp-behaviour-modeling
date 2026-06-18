@@ -7,6 +7,11 @@ we have ground-truth labels to validate our models against.  The data format
 matches the trial-level DataFrame produced by
 `matchingp.dataset.load_human_mp_data`.
 
+Crucially, strategies **switch within a session** -- a single session can
+contain stretches of biased play, win-stay-lose-switch, and perseverant
+behaviour.  The rate and pattern of switching varies across sessions, giving
+the GLM-HMM something realistic to recover.
+
 ## Strategies
 
 | Strategy | Description |
@@ -19,16 +24,19 @@ matches the trial-level DataFrame produced by
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
+import sys, os
+sys.path.insert(0, os.path.join(os.getcwd(), "notebooks"))
+from style import apply_style, plot_choices, STRATEGY_COLORS
+apply_style()
 
 rng = np.random.default_rng(42)
 ```
 
-## Opponent model
+## Opponent and reward
 
-In the matching pennies task, the opponent chooses L or R on each trial.
-For simplicity we use a random opponent that picks each side with equal
-probability.  The player is the "matcher" and is rewarded when their choice
-equals the opponent's choice.
+The synthetic player is the **matcher**: they are rewarded when their choice
+equals the opponent's choice (just like in the human experiment).  The
+opponent picks L/R uniformly at random.
 
 ```{python}
 def make_opponent_choices(n_trials, p_right=0.5, rng=rng):
@@ -40,133 +48,225 @@ def make_opponent_choices(n_trials, p_right=0.5, rng=rng):
 Each generator returns a binary choice vector (0 = Left, 1 = Right).
 
 ```{python}
-def biased_strategy(n_trials, p_right=0.8, rng=rng):
-    """Choose Right with fixed probability p_right."""
-    return rng.binomial(1, p_right, size=n_trials)
-
-
-def wsls_strategy(n_trials, opponent_choices, epsilon=0.05, rng=rng):
-    """Win-stay lose-switch with small lapse rate epsilon."""
-    choices = np.zeros(n_trials, dtype=int)
-    choices[0] = rng.binomial(1, 0.5)
-    for t in range(1, n_trials):
-        won = choices[t - 1] == opponent_choices[t - 1]
-        if won:
-            ideal = choices[t - 1]      # stay
-        else:
-            ideal = 1 - choices[t - 1]  # switch
-        if rng.random() < epsilon:
-            choices[t] = 1 - ideal
-        else:
-            choices[t] = ideal
+def biased_strategy(n_trials, prev_choice, opponent_choices, rewards,
+                    p_right=0.8, rng=rng):
+    choices = rng.binomial(1, p_right, size=n_trials)
     return choices
 
 
-def perseverant_strategy(n_trials, p_stay=0.9, rng=rng):
-    """Repeat the previous choice with probability p_stay."""
+def wsls_strategy(n_trials, prev_choice, opponent_choices, rewards,
+                  epsilon=0.05, rng=rng):
     choices = np.zeros(n_trials, dtype=int)
-    choices[0] = rng.binomial(1, 0.5)
-    for t in range(1, n_trials):
+    c = prev_choice
+    for t in range(n_trials):
+        if c is None:
+            c = rng.binomial(1, 0.5)
+        else:
+            prev_won = (c == opponent_choices[t - 1]) if t > 0 else False
+            if prev_won:
+                ideal = c           # stay
+            else:
+                ideal = 1 - c       # switch
+            c = ideal if rng.random() >= epsilon else 1 - ideal
+        choices[t] = c
+    return choices
+
+
+def perseverant_strategy(n_trials, prev_choice, opponent_choices, rewards,
+                         p_stay=0.9, rng=rng):
+    choices = np.zeros(n_trials, dtype=int)
+    c = prev_choice if prev_choice is not None else rng.binomial(1, 0.5)
+    for t in range(n_trials):
         if rng.random() < p_stay:
-            choices[t] = choices[t - 1]
+            choices[t] = c
         else:
-            choices[t] = 1 - choices[t - 1]
+            choices[t] = 1 - c
+            c = 1 - c
     return choices
+```
+
+## Strategy-switching dynamics
+
+Each session is divided into blocks whose length is drawn from a Gamma
+distribution.  The minimum block length and the Gamma shape/scale vary
+across sessions so that some sessions have fast switching and others have
+long, stable blocks.
+
+```{python}
+STRATEGIES = {
+    "biased": biased_strategy,
+    "wsls": wsls_strategy,
+    "perseverant": perseverant_strategy,
+}
+
+SESSION_DYNAMICS = [
+    {"gamma_shape": 5, "gamma_scale": 30, "min_block": 30},   # long stable blocks
+    {"gamma_shape": 3, "gamma_scale": 20, "min_block": 20},   # medium blocks
+    {"gamma_shape": 2, "gamma_scale": 15, "min_block": 15},   # faster switching
+    {"gamma_shape": 2, "gamma_scale": 10, "min_block": 10},   # rapid switching
+]
+
+
+def generate_block_schedule(n_trials, dynamics, rng):
+    blocks = []
+    remaining = n_trials
+    strat_names = list(STRATEGIES.keys())
+    prev_strat = None
+    while remaining > 0:
+        length = max(int(rng.gamma(dynamics["gamma_shape"],
+                                    dynamics["gamma_scale"])),
+                     dynamics["min_block"])
+        length = min(length, remaining)
+        candidates = [s for s in strat_names if s != prev_strat]
+        strat = rng.choice(candidates)
+        blocks.append((strat, length))
+        prev_strat = strat
+        remaining -= length
+    return blocks
 ```
 
 ## Generate sessions
 
-We generate multiple sessions per strategy to mirror a real experiment with
-repeated blocks.
-
 ```{python}
-def generate_sessions(strategy_fn, strategy_name, n_sessions=10,
-                      n_trials=200, rng=rng, **strategy_kwargs):
+def generate_session(session_idx, n_trials=400, rng=rng):
+    dynamics = SESSION_DYNAMICS[session_idx % len(SESSION_DYNAMICS)]
+    blocks = generate_block_schedule(n_trials, dynamics, rng)
+    opp = make_opponent_choices(n_trials, rng=rng)
+
+    all_choices = []
+    all_strategies = []
+    prev_choice = None
+
+    trial_offset = 0
+    for strat_name, block_len in blocks:
+        fn = STRATEGIES[strat_name]
+        opp_block = opp[trial_offset:trial_offset + block_len]
+        # compute rewards so far for WSLS (needs previous reward)
+        block_choices = fn(block_len, prev_choice=prev_choice,
+                           opponent_choices=opp_block,
+                           rewards=None, rng=rng)
+        # reward = match (player matches opponent)
+        all_choices.append(block_choices)
+        all_strategies.extend([strat_name] * block_len)
+        prev_choice = int(block_choices[-1])
+        trial_offset += block_len
+
+    agent = np.concatenate(all_choices)
+    reward = (agent == opp).astype(int)
+
+    session_code = f"synth_{session_idx:03d}"
     rows = []
-    for sess_idx in range(n_sessions):
-        opp = make_opponent_choices(n_trials, rng=rng)
-        if "opponent_choices" in strategy_fn.__code__.co_varnames:
-            agent = strategy_fn(n_trials, opponent_choices=opp, rng=rng,
-                                **strategy_kwargs)
-        else:
-            agent = strategy_fn(n_trials, rng=rng, **strategy_kwargs)
-        reward = (agent == opp).astype(int)
-        choice_str = np.where(agent == 1, "R", "L")
-        opp_str = np.where(opp == 1, "R", "L")
-        session_code = f"synth_{strategy_name}_{sess_idx:03d}"
-        for t in range(n_trials):
-            rows.append({
-                "participant_code": f"synth_{strategy_name}",
-                "block": "single",
-                "block_trial": t + 1,
-                "overall_trial": t + 1,
-                "opponent_type": "algo_A",
-                "opponent_id": "algo_A_v1",
-                "choice": choice_str[t],
-                "opponent_choice": opp_str[t],
-                "reward": reward[t] * 10,
-                "total_points": int(reward[:t + 1].sum()) * 10,
-                "session_code": session_code,
-                "strategy": strategy_name,
-            })
+    for t in range(n_trials):
+        rows.append({
+            "participant_code": f"synth_{session_idx:03d}",
+            "block": "single",
+            "block_trial": t + 1,
+            "overall_trial": t + 1,
+            "opponent_type": "algo_A",
+            "opponent_id": "algo_A_v1",
+            "choice": "R" if agent[t] == 1 else "L",
+            "opponent_choice": "R" if opp[t] == 1 else "L",
+            "reward": int(reward[t]) * 10,
+            "total_points": int(reward[:t + 1].sum()) * 10,
+            "session_code": session_code,
+            "strategy": all_strategies[t],
+        })
     return pd.DataFrame(rows)
 
 
-df_biased = generate_sessions(biased_strategy, "biased",
-                              n_sessions=10, n_trials=200, p_right=0.8)
-df_wsls = generate_sessions(wsls_strategy, "wsls",
-                            n_sessions=10, n_trials=200, epsilon=0.05)
-df_persev = generate_sessions(perseverant_strategy, "perseverant",
-                              n_sessions=10, n_trials=200, p_stay=0.9)
-
-df_all = pd.concat([df_biased, df_wsls, df_persev], ignore_index=True)
-print(f"Total trials: {len(df_all)}")
+n_sessions = 20
+dfs = [generate_session(i, n_trials=400, rng=rng) for i in range(n_sessions)]
+df_all = pd.concat(dfs, ignore_index=True)
+print(f"Total trials: {len(df_all)}, sessions: {df_all['session_code'].nunique()}")
 df_all.head()
 ```
 
-## Quick diagnostics
+## Choice plots
+
+Each session shows choices as coloured ticks (blue = Left up, red = Right
+down), with filled dots for rewarded trials.  Background shading shows the
+generating strategy.
 
 ```{python}
-#| label: fig-choice-proportions
-#| fig-cap: "Proportion of Right choices per strategy."
-fig, axes = plt.subplots(1, 3, figsize=(12, 3), sharey=True)
-for ax, (name, grp) in zip(axes, df_all.groupby("strategy")):
-    p_right = grp.groupby("session_code")["choice"].apply(
-        lambda s: (s == "R").mean()
-    )
-    ax.hist(p_right, bins=15, edgecolor="k", alpha=0.7)
-    ax.set_title(name)
-    ax.set_xlabel("P(Right)")
-    ax.axvline(0.5, ls="--", c="grey")
-axes[0].set_ylabel("Sessions")
+#| label: fig-choice-rasters
+#| fig-cap: "Choice rasters for four example sessions with different switching dynamics.  Background colours show the generating strategy."
+fig, axes = plt.subplots(4, 1, figsize=(14, 10), sharex=False)
+for ax, sess_idx in zip(axes, [0, 1, 2, 3]):
+    sess_code = f"synth_{sess_idx:03d}"
+    sess_df = df_all.loc[df_all["session_code"] == sess_code].reset_index(drop=True)
+    plot_choices(sess_df, shade_strategy=True, fig=fig, ax=ax)
+    ax.set_title(f"Session {sess_idx} — {SESSION_DYNAMICS[sess_idx % len(SESSION_DYNAMICS)]}",
+                 fontsize=9)
+
+# legend
+from matplotlib.patches import Patch
+handles = [Patch(facecolor=c, alpha=0.3, label=s)
+           for s, c in STRATEGY_COLORS.items()]
+axes[0].legend(handles=handles, loc="upper right", fontsize=8, ncol=3)
 plt.tight_layout()
 plt.show()
 ```
 
+## Strategy proportions per session
+
 ```{python}
-#| label: fig-wsls-check
-#| fig-cap: "Win-stay and lose-switch rates by strategy."
+#| label: fig-strategy-proportions
+#| fig-cap: "Proportion of trials spent in each strategy, per session."
+prop_df = (
+    df_all.groupby(["session_code", "strategy"])
+    .size()
+    .unstack(fill_value=0)
+)
+prop_df = prop_df.div(prop_df.sum(axis=1), axis=0)
+
+fig, ax = plt.subplots(figsize=(10, 3))
+bottom = np.zeros(len(prop_df))
+for strat in ["biased", "wsls", "perseverant"]:
+    if strat in prop_df.columns:
+        vals = prop_df[strat].values
+        ax.bar(range(len(prop_df)), vals, bottom=bottom,
+               color=STRATEGY_COLORS[strat], label=strat, edgecolor="white",
+               linewidth=0.3)
+        bottom += vals
+ax.set_xlabel("Session")
+ax.set_ylabel("Proportion")
+ax.set_xticks(range(len(prop_df)))
+ax.set_xticklabels([f"{i}" for i in range(len(prop_df))], fontsize=7)
+ax.legend(fontsize=8)
+plt.tight_layout()
+plt.show()
+```
+
+## Win-stay / lose-switch rates
+
+```{python}
+#| label: fig-wsls-rates
+#| fig-cap: "Win-stay and lose-switch rates by generating strategy (pooled across sessions)."
 def wsls_rates(df):
     records = []
-    for sess, sdf in df.groupby("session_code"):
+    for (sess, strat), sdf in df.groupby(["session_code", "strategy"]):
         c = (sdf["choice"].values == "R").astype(int)
         r = (sdf["reward"].values > 0).astype(int)
+        if len(c) < 5:
+            continue
         stay = c[1:] == c[:-1]
         win = r[:-1] == 1
         ws = stay[win].mean() if win.sum() > 0 else np.nan
         ls = (~stay[~win]).mean() if (~win).sum() > 0 else np.nan
-        records.append({"session_code": sess, "strategy": sdf["strategy"].iloc[0],
+        records.append({"session_code": sess, "strategy": strat,
                         "win_stay": ws, "lose_switch": ls})
     return pd.DataFrame(records)
 
 rates = wsls_rates(df_all)
 fig, axes = plt.subplots(1, 2, figsize=(8, 3))
 for ax, metric in zip(axes, ["win_stay", "lose_switch"]):
-    for name, grp in rates.groupby("strategy"):
-        ax.hist(grp[metric].dropna(), bins=10, alpha=0.5, label=name)
+    for strat in ["biased", "wsls", "perseverant"]:
+        vals = rates.loc[rates["strategy"] == strat, metric].dropna()
+        ax.hist(vals, bins=12, alpha=0.55, label=strat,
+                color=STRATEGY_COLORS[strat], edgecolor="white", linewidth=0.3)
     ax.set_xlabel(metric.replace("_", " ").title())
-    ax.set_ylabel("Sessions")
-    ax.legend()
+    ax.set_ylabel("Blocks")
+    ax.legend(fontsize=7)
 plt.tight_layout()
 plt.show()
 ```
@@ -174,7 +274,6 @@ plt.show()
 ## Save to disk
 
 ```{python}
-import os
 out_dir = os.path.join("data")
 os.makedirs(out_dir, exist_ok=True)
 out_path = os.path.join(out_dir, "synthetic_mp.csv")

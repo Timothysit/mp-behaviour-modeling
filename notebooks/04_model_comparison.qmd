@@ -1,0 +1,352 @@
+---
+title: "Model Comparison: GLM-HMM vs Q-Learning"
+---
+
+How do we compare a state-switching model (GLM-HMM) with a value-learning
+model (Q-learning)?  Both produce a trial-by-trial $P(R)$, so we can
+evaluate them on the **same held-out trials** using cross-validated
+log-likelihood (bits per trial).
+
+## Cross-validation strategy
+
+The approach follows `cross_val_monkey_data` in `matchingp.modeling.train`
+and uses **within-session** trial folds so that both models see the same
+train/test split:
+
+1. **Fold assignment.** Valid trials within each session are randomly
+   assigned to one of $F$ folds (default $F = 5$).  Because the assignment
+   is done *within* each session, every fold's test set spans all sessions,
+   and temporal dependencies within a session are preserved in the training
+   set.
+
+2. **GLM-HMM fitting with masks.** The `ssm` library supports fitting with
+   *masks*: on each EM iteration, held-out trials contribute to the forward-
+   backward pass (preserving temporal structure) but their inputs are zeroed
+   so they do not influence the parameter updates.  After fitting, the model
+   predicts $P(R)$ on the held-out trials using the posterior state
+   probabilities ($\gamma$) and the fitted GLM weights.
+
+3. **Q-learning fitting with masks.**  The Q-learning model processes trials
+   sequentially.  During fitting, parameters $(\alpha, \delta_1, \delta_2)$
+   are optimised using only training-set trials in the likelihood.  Value
+   updates still run on training trials so that $V_L$ and $V_R$ stay
+   current, but held-out trials are skipped during the update step (the
+   decay $\alpha$ is still applied).  At test time, the fitted parameters
+   are applied to the full trial stream and predictions are scored only on
+   held-out trials.
+
+4. **Scoring.** For both models, held-out log-likelihood is computed as
+   $\frac{1}{N_\text{test}} \sum_t \bigl[y_t \log \hat p_t + (1-y_t)
+   \log(1-\hat p_t)\bigr] / \ln 2$ to give **bits per trial**.
+
+This design ensures fair comparison: both models see the exact same training
+and test trials, and neither can peek at held-out outcomes.
+
+```{python}
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import ssm
+import scipy.optimize as spopt
+from sklearn.model_selection import KFold
+import sys, os
+sys.path.insert(0, os.path.join(os.getcwd(), "notebooks"))
+from style import (apply_style, plot_choices, CHOICE_COLORS,
+                   MODEL_COLORS, STATE_COLORS, STRATEGY_COLORS)
+apply_style()
+```
+
+## Load data and helpers
+
+```{python}
+df = pd.read_csv("data/synthetic_mp.csv")
+print(f"{len(df)} trials, {df['session_code'].nunique()} sessions")
+```
+
+```{python}
+# -- GLM-HMM input builder (same as notebook 02) --------------------------
+def make_glmhmm_inputs(df):
+    true_choices, inpts, session_codes = [], [], []
+    for sess, sdf in df.groupby("session_code"):
+        agent_choice = (sdf["choice"].values == "R").astype(float)
+        reward = (sdf["reward"].values > 0).astype(float)
+        T = len(agent_choice)
+        bias = np.ones(T)
+        prev_dir = np.zeros(T)
+        prev_dir[1:] = np.where(agent_choice[:-1] == 1, 1, -1)
+        prev_reward = np.zeros(T)
+        prev_reward[1:] = reward[:-1]
+        X = np.column_stack([bias, prev_dir * prev_reward,
+                              prev_dir * (1 - prev_reward)])
+        y = agent_choice.astype(np.int64).reshape(-1, 1)
+        true_choices.append(y)
+        inpts.append(X)
+        session_codes.append(sess)
+    return true_choices, inpts, session_codes
+
+
+# -- Q-learning model (same as notebook 03) --------------------------------
+def qlearning_nll(choices, rewards, alpha=0.5, delta_1=1.0, delta_2=-1.0,
+                  sess_ids=None, ll_mask=None, update_mask=None):
+    T = len(choices)
+    if ll_mask is None:
+        ll_mask = np.ones(T)
+    if update_mask is None:
+        update_mask = np.ones(T)
+    v_l, v_r = 0.0, 0.0
+    nll = 0.0
+    logit_pR = np.zeros(T)
+    for t in range(T):
+        if sess_ids is not None and t > 0 and sess_ids[t] != sess_ids[t - 1]:
+            v_l, v_r = 0.0, 0.0
+        logit_pR[t] = v_r - v_l
+        if ll_mask[t] == 1:
+            pR = 1.0 / (1.0 + np.exp(-logit_pR[t]))
+            nll -= np.log(pR) if choices[t] == 1 else np.log(1.0 - pR)
+        if choices[t] == 0:
+            dl = delta_1 if rewards[t] == 1 else delta_2
+            dr = 0
+        else:
+            dl = 0
+            dr = delta_1 if rewards[t] == 1 else delta_2
+        if update_mask[t] == 1:
+            v_l = alpha * v_l + dl
+            v_r = alpha * v_r + dr
+        else:
+            v_l = alpha * v_l
+            v_r = alpha * v_r
+    return nll, logit_pR
+
+
+def fit_qlearning(choices, rewards, sess_ids=None,
+                  ll_mask=None, update_mask=None):
+    def obj(theta):
+        a, d1, d2 = theta
+        nll, _ = qlearning_nll(choices, rewards, alpha=a, delta_1=d1,
+                                delta_2=d2, sess_ids=sess_ids,
+                                ll_mask=ll_mask, update_mask=update_mask)
+        return nll
+    x0 = np.array([0.5, 1.0, -1.0])
+    bounds = [(1e-6, 1 - 1e-6), (None, None), (None, None)]
+    return spopt.minimize(obj, x0, method="L-BFGS-B", bounds=bounds)
+```
+
+## Within-session cross-validation masks
+
+Following `make_within_session_cv_masks` in `matchingp`, we assign each
+valid trial within a session to one of $F$ folds.
+
+```{python}
+def make_within_session_cv_masks(true_choices_list, num_folds=5, fold=0,
+                                  seed=0):
+    rng = np.random.default_rng(seed)
+    train_masks, test_masks = [], []
+    for y_sess in true_choices_list:
+        T = len(y_sess)
+        fold_ids = np.resize(np.arange(num_folds), T)
+        rng.shuffle(fold_ids)
+        test_mask = (fold_ids == fold).astype(int).reshape(T, 1)
+        train_mask = (fold_ids != fold).astype(int).reshape(T, 1)
+        train_masks.append(train_mask)
+        test_masks.append(test_mask)
+    return train_masks, test_masks
+```
+
+## Run cross-validation
+
+```{python}
+num_folds = 5
+num_states_list = [1, 2, 3, 4]
+obs_dim = 1
+
+true_choices, inpts, session_codes = make_glmhmm_inputs(df)
+input_dim = inpts[0].shape[1]
+num_categories = 2
+
+# Storage
+glmhmm_ll = np.zeros((len(num_states_list), num_folds))
+qlearning_ll_folds = np.zeros(num_folds)
+
+# Build flat arrays for Q-learning
+choices_flat = np.concatenate([y.flatten() for y in true_choices])
+rewards_flat = (df["reward"].values > 0).astype(int)
+sess_ids_flat = df["session_code"].values
+
+# Collect all fold masks to build fold_id vector
+all_test_masks = []
+
+for cv_i in range(num_folds):
+    train_masks, test_masks = make_within_session_cv_masks(
+        true_choices, num_folds=num_folds, fold=cv_i, seed=0
+    )
+    all_test_masks.append(test_masks)
+
+    # ---- GLM-HMM ----
+    for s_idx, K in enumerate(num_states_list):
+        glmhmm = ssm.HMM(
+            K, obs_dim, input_dim,
+            observations="input_driven_obs",
+            observation_kwargs=dict(C=num_categories, prior_sigma=2),
+            transition_kwargs=dict(alpha=1, kappa=0),
+            transitions="sticky",
+        )
+        glmhmm.fit(true_choices, inputs=inpts, masks=train_masks,
+                    method="em", num_iters=200, tolerance=1e-3)
+        n_test = int(sum(np.sum(m) for m in test_masks))
+        ll = glmhmm.log_likelihood(true_choices, inputs=inpts,
+                                    masks=test_masks)
+        glmhmm_ll[s_idx, cv_i] = ll / (n_test * np.log(2))
+
+    # ---- Q-learning (within-session masks) ----
+    train_flat = np.concatenate([m.flatten() for m in train_masks])
+    test_flat = np.concatenate([m.flatten() for m in test_masks])
+
+    res = fit_qlearning(choices_flat, rewards_flat, sess_ids=sess_ids_flat,
+                        ll_mask=train_flat, update_mask=train_flat)
+    a, d1, d2 = res.x
+    nll_test, logit_pR = qlearning_nll(
+        choices_flat, rewards_flat, alpha=a, delta_1=d1, delta_2=d2,
+        sess_ids=sess_ids_flat, ll_mask=test_flat, update_mask=train_flat
+    )
+    n_test_q = int(test_flat.sum())
+    qlearning_ll_folds[cv_i] = -nll_test / (n_test_q * np.log(2))
+
+    print(f"Fold {cv_i}: GLM-HMM(K=3)={glmhmm_ll[2, cv_i]:.4f}, "
+          f"Q-learning={qlearning_ll_folds[cv_i]:.4f}")
+```
+
+## Results
+
+```{python}
+#| label: fig-cv-comparison
+#| fig-cap: "Cross-validated log-likelihood (bits/trial) for GLM-HMM (varying K) and Q-learning, using identical within-session trial folds."
+fig, ax = plt.subplots(figsize=(7, 4))
+
+# GLM-HMM
+for s_idx, K in enumerate(num_states_list):
+    mean_ll = glmhmm_ll[s_idx].mean()
+    sem = glmhmm_ll[s_idx].std() / np.sqrt(num_folds)
+    ax.bar(s_idx, mean_ll, yerr=sem, color=MODEL_COLORS["GLM-HMM"],
+           edgecolor="white", linewidth=0.5, alpha=0.85, capsize=3)
+    ax.text(s_idx, mean_ll + sem + 0.002, f"{mean_ll:.3f}", ha="center",
+            fontsize=7, color="#555")
+
+# Q-learning
+q_mean = qlearning_ll_folds.mean()
+q_sem = qlearning_ll_folds.std() / np.sqrt(num_folds)
+q_pos = len(num_states_list) + 0.5
+ax.bar(q_pos, q_mean, yerr=q_sem, color=MODEL_COLORS["Q-learning"],
+       edgecolor="white", linewidth=0.5, alpha=0.85, capsize=3)
+ax.text(q_pos, q_mean + q_sem + 0.002, f"{q_mean:.3f}", ha="center",
+        fontsize=7, color="#555")
+
+labels = [f"GLM-HMM\nK={K}" for K in num_states_list] + ["Q-learning"]
+ax.set_xticks(list(range(len(num_states_list))) + [q_pos])
+ax.set_xticklabels(labels, fontsize=8)
+ax.set_ylabel("CV LL (bits / trial)")
+plt.tight_layout()
+plt.show()
+```
+
+## Per-fold breakdown
+
+```{python}
+#| label: fig-per-fold
+#| fig-cap: "Per-fold log-likelihood for GLM-HMM (K=3) and Q-learning."
+fig, ax = plt.subplots(figsize=(6, 3))
+x = np.arange(num_folds)
+w = 0.35
+ax.bar(x - w / 2, glmhmm_ll[2], w, label="GLM-HMM (K=3)",
+       color=MODEL_COLORS["GLM-HMM"], edgecolor="white", alpha=0.85)
+ax.bar(x + w / 2, qlearning_ll_folds, w, label="Q-learning",
+       color=MODEL_COLORS["Q-learning"], edgecolor="white", alpha=0.85)
+ax.set_xlabel("Fold")
+ax.set_ylabel("LL (bits / trial)")
+ax.set_xticks(x)
+ax.legend(fontsize=8)
+plt.tight_layout()
+plt.show()
+```
+
+## Overlaid predictions on an example session
+
+```{python}
+#| label: fig-pred-overlay
+#| fig-cap: "Choice raster with overlaid P(R) predictions from GLM-HMM (K=3) and Q-learning."
+# Fit both models to all data for visualisation
+glmhmm_full = ssm.HMM(
+    3, obs_dim, input_dim,
+    observations="input_driven_obs",
+    observation_kwargs=dict(C=num_categories, prior_sigma=2),
+    transition_kwargs=dict(alpha=1, kappa=0),
+    transitions="sticky",
+)
+glmhmm_full.fit(true_choices, inputs=inpts, method="em",
+                num_iters=200, tolerance=1e-3)
+
+res_full = fit_qlearning(choices_flat, rewards_flat, sess_ids=sess_ids_flat)
+a_f, d1_f, d2_f = res_full.x
+_, logit_pR_full = qlearning_nll(choices_flat, rewards_flat, alpha=a_f,
+                                  delta_1=d1_f, delta_2=d2_f,
+                                  sess_ids=sess_ids_flat)
+pR_q_full = 1.0 / (1.0 + np.exp(-logit_pR_full))
+
+# GLM-HMM pR per session
+weights_full = -glmhmm_full.observations.params[:, 0, :]  # (K, D)
+pR_hmm_all = []
+for y, x in zip(true_choices, inpts):
+    gamma = glmhmm_full.expected_states(data=y, input=x)[0]
+    logits_per_state = x @ weights_full.T  # (T, K)
+    pR_per_state = 1.0 / (1.0 + np.exp(-logits_per_state))
+    pR_hmm = (gamma * pR_per_state).sum(axis=1)
+    pR_hmm_all.append(pR_hmm)
+pR_hmm_flat = np.concatenate(pR_hmm_all)
+
+fig, axes = plt.subplots(4, 1, figsize=(14, 10),
+                         gridspec_kw={"height_ratios": [2.5, 1, 2.5, 1]})
+
+for pair_idx in range(2):
+    ax_choice = axes[2 * pair_idx]
+    ax_pr = axes[2 * pair_idx + 1]
+    sess_idx = pair_idx
+    sess_code = session_codes[sess_idx]
+    sess_df = df.loc[df["session_code"] == sess_code].reset_index(drop=True)
+    sess_mask = (df["session_code"] == sess_code).values
+
+    plot_choices(sess_df, shade_strategy=True, fig=fig, ax=ax_choice)
+    ax_choice.set_title(f"Session: {sess_code}", fontsize=9)
+    ax_choice.set_xlabel("")
+
+    ax_pr.plot(pR_hmm_flat[sess_mask], color=MODEL_COLORS["GLM-HMM"],
+               lw=1, label="GLM-HMM (K=3)", alpha=0.9)
+    ax_pr.plot(pR_q_full[sess_mask], color=MODEL_COLORS["Q-learning"],
+               lw=1, label="Q-learning", alpha=0.9)
+    ax_pr.axhline(0.5, color="grey", lw=0.5, ls="--")
+    ax_pr.set_ylim(-0.05, 1.05)
+    ax_pr.spines["left"].set_bounds(0, 1)
+    ax_pr.set_yticks([0, 0.5, 1])
+    ax_pr.set_ylabel("P(R)")
+    if pair_idx == 0:
+        ax_pr.legend(fontsize=7, loc="upper right")
+
+axes[-1].set_xlabel("Trial")
+plt.tight_layout()
+plt.show()
+```
+
+## Summary
+
+The within-session cross-validation scheme ensures a fair comparison:
+
+- Both models are fit on identical training trials and scored on identical
+  held-out trials.
+- Temporal structure is preserved -- the GLM-HMM still runs its
+  forward-backward pass over entire sessions, and Q-learning still updates
+  values sequentially.
+- The metric (bits/trial) is directly comparable because both models output
+  a scalar $P(R)$ per trial.
+
+The GLM-HMM can capture abrupt strategy switches via its latent states,
+while Q-learning tracks a smoothly evolving value signal.  Which model wins
+depends on whether the true generative process is better described by
+discrete state changes or by gradual value updating.

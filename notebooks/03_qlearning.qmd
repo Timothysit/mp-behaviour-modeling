@@ -26,6 +26,10 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import scipy.optimize as spopt
+import sys, os
+sys.path.insert(0, os.path.join(os.getcwd(), "notebooks"))
+from style import apply_style, plot_choices, CHOICE_COLORS, STRATEGY_COLORS
+apply_style()
 ```
 
 ## Load synthetic data
@@ -71,7 +75,6 @@ def qlearning_nll(choices, rewards, alpha=0.5, delta_1=1.0, delta_2=-1.0,
         pR = 1.0 / (1.0 + np.exp(-logit_pR[t]))
         nll -= np.log(pR) if choices[t] == 1 else np.log(1.0 - pR)
 
-        # value update
         if choices[t] == 0:
             delta_l = delta_1 if rewards[t] == 1 else delta_2
             delta_r = 0
@@ -85,7 +88,6 @@ def qlearning_nll(choices, rewards, alpha=0.5, delta_1=1.0, delta_2=-1.0,
 
 
 def fit_qlearning(choices, rewards, sess_ids=None):
-    """Fit (alpha, delta_1, delta_2) by minimising NLL."""
     def obj(theta):
         a, d1, d2 = theta
         nll, _ = qlearning_nll(choices, rewards, alpha=a, delta_1=d1,
@@ -98,71 +100,52 @@ def fit_qlearning(choices, rewards, sess_ids=None):
     return res
 ```
 
-## Fit per strategy
+## Fit to all data
 
 ```{python}
-results = {}
-for strategy, sdf in df.groupby("strategy"):
-    choices = (sdf["choice"].values == "R").astype(int)
-    rewards = (sdf["reward"].values > 0).astype(int)
-    sess_ids = sdf["session_code"].values
+choices = (df["choice"].values == "R").astype(int)
+rewards = (df["reward"].values > 0).astype(int)
+sess_ids = df["session_code"].values
 
-    res = fit_qlearning(choices, rewards, sess_ids=sess_ids)
-    alpha, d1, d2 = res.x
-    total_trials = len(choices)
-    ll_bits = -res.fun / (total_trials * np.log(2))
-
-    results[strategy] = {
-        "alpha": alpha, "delta_1": d1, "delta_2": d2,
-        "nll": res.fun, "ll_bits": ll_bits, "result": res,
-    }
-    print(f"{strategy:>12s}: α={alpha:.3f}  δ₁={d1:+.3f}  δ₂={d2:+.3f}  "
-          f"LL={ll_bits:.4f} bits/trial")
+res = fit_qlearning(choices, rewards, sess_ids=sess_ids)
+alpha, d1, d2 = res.x
+total_trials = len(choices)
+ll_bits = -res.fun / (total_trials * np.log(2))
+print(f"α={alpha:.3f}  δ₁={d1:+.3f}  δ₂={d2:+.3f}  LL={ll_bits:.4f} bits/trial")
 ```
 
-## Parameter comparison
-
-```{python}
-#| label: fig-qlearning-params
-#| fig-cap: "Fitted Q-learning parameters by strategy."
-param_df = pd.DataFrame({
-    k: {"alpha": v["alpha"], "delta_1": v["delta_1"], "delta_2": v["delta_2"]}
-    for k, v in results.items()
-}).T
-
-fig, axes = plt.subplots(1, 3, figsize=(10, 3))
-for ax, col in zip(axes, ["alpha", "delta_1", "delta_2"]):
-    ax.bar(param_df.index, param_df[col], color=["tab:blue", "tab:green", "tab:orange"])
-    ax.set_ylabel(col)
-    ax.set_title(col)
-    if col != "alpha":
-        ax.axhline(0, color="grey", lw=0.5)
-plt.tight_layout()
-plt.show()
-```
-
-## Trial-by-trial predicted P(Right)
+## Trial-by-trial predicted P(Right) with choice raster
 
 ```{python}
 #| label: fig-qlearning-pR
-#| fig-cap: "Predicted P(Right) from the fitted Q-learning model, one example session per strategy."
-fig, axes = plt.subplots(3, 1, figsize=(10, 7), sharex=True)
-for ax, (strategy, sdf) in zip(axes, df.groupby("strategy")):
-    sess = sdf["session_code"].unique()[0]
-    sess_df = sdf.loc[sdf["session_code"] == sess]
-    choices = (sess_df["choice"].values == "R").astype(int)
-    rewards = (sess_df["reward"].values > 0).astype(int)
-    r = results[strategy]
-    _, logit_pR = qlearning_nll(choices, rewards, alpha=r["alpha"],
-                                 delta_1=r["delta_1"], delta_2=r["delta_2"])
-    pR = 1.0 / (1.0 + np.exp(-logit_pR))
-    trials = np.arange(len(pR))
-    ax.plot(trials, pR, color="steelblue", label="P(R)")
-    ax.scatter(trials, choices, s=5, alpha=0.3, color="black", label="choice (0=L,1=R)")
-    ax.set_ylabel("P(Right)")
-    ax.set_title(f"{strategy} ({sess})")
-    ax.set_ylim(-0.05, 1.05)
-    ax.legend(fontsize=7, loc="upper right")
+#| fig-cap: "Predicted P(Right) from the fitted Q-learning model overlaid on choice rasters for four example sessions."
+_, logit_pR_all = qlearning_nll(choices, rewards, alpha=alpha, delta_1=d1,
+                                 delta_2=d2, sess_ids=sess_ids)
+pR_all = 1.0 / (1.0 + np.exp(-logit_pR_all))
+df["pR_qlearning"] = pR_all
+
+fig, axes = plt.subplots(8, 1, figsize=(14, 16),
+                         gridspec_kw={"height_ratios": [2, 1] * 4})
+for i in range(4):
+    ax_choice = axes[2 * i]
+    ax_pr = axes[2 * i + 1]
+    sess_code = df["session_code"].unique()[i]
+    sess_df = df.loc[df["session_code"] == sess_code].reset_index(drop=True)
+
+    plot_choices(sess_df, shade_strategy=True, fig=fig, ax=ax_choice)
+    ax_choice.set_title(f"Session: {sess_code}", fontsize=9)
+    ax_choice.set_xlabel("")
+
+    ax_pr.plot(sess_df["pR_qlearning"].values, color="#F45B69", lw=1,
+               label="P(R)")
+    ax_pr.axhline(0.5, color="grey", lw=0.5, ls="--")
+    ax_pr.set_ylim(-0.05, 1.05)
+    ax_pr.spines["left"].set_bounds(0, 1)
+    ax_pr.set_yticks([0, 0.5, 1])
+    ax_pr.set_ylabel("P(R)")
+    if i == 0:
+        ax_pr.legend(fontsize=7, loc="upper right")
+
 axes[-1].set_xlabel("Trial")
 plt.tight_layout()
 plt.show()
@@ -175,50 +158,44 @@ cross-validation (splitting by session).
 
 ```{python}
 #| label: fig-cv-ll
-#| fig-cap: "Cross-validated log-likelihood (bits/trial) by strategy."
+#| fig-cap: "Cross-validated log-likelihood (bits/trial) by fold."
 from sklearn.model_selection import KFold
 
 n_folds = 5
-cv_results = {}
+sessions = df["session_code"].unique()
+kf = KFold(n_splits=n_folds, shuffle=True, random_state=0)
+fold_lls = []
 
-for strategy, sdf in df.groupby("strategy"):
-    sessions = sdf["session_code"].unique()
-    kf = KFold(n_splits=n_folds, shuffle=True, random_state=0)
-    fold_lls = []
+for train_idx, test_idx in kf.split(sessions):
+    train_sess = sessions[train_idx]
+    test_sess = sessions[test_idx]
 
-    for train_idx, test_idx in kf.split(sessions):
-        train_sess = sessions[train_idx]
-        test_sess = sessions[test_idx]
+    train_df = df.loc[df["session_code"].isin(train_sess)]
+    test_df = df.loc[df["session_code"].isin(test_sess)]
 
-        train_df = sdf.loc[sdf["session_code"].isin(train_sess)]
-        test_df = sdf.loc[sdf["session_code"].isin(test_sess)]
+    c_train = (train_df["choice"].values == "R").astype(int)
+    r_train = (train_df["reward"].values > 0).astype(int)
+    s_train = train_df["session_code"].values
 
-        c_train = (train_df["choice"].values == "R").astype(int)
-        r_train = (train_df["reward"].values > 0).astype(int)
-        s_train = train_df["session_code"].values
+    res = fit_qlearning(c_train, r_train, sess_ids=s_train)
+    a, d1_, d2_ = res.x
 
-        res = fit_qlearning(c_train, r_train, sess_ids=s_train)
-        a, d1, d2 = res.x
+    c_test = (test_df["choice"].values == "R").astype(int)
+    r_test = (test_df["reward"].values > 0).astype(int)
+    s_test = test_df["session_code"].values
 
-        c_test = (test_df["choice"].values == "R").astype(int)
-        r_test = (test_df["reward"].values > 0).astype(int)
-        s_test = test_df["session_code"].values
+    nll_test, _ = qlearning_nll(c_test, r_test, alpha=a, delta_1=d1_,
+                                 delta_2=d2_, sess_ids=s_test)
+    ll_bits = -nll_test / (len(c_test) * np.log(2))
+    fold_lls.append(ll_bits)
 
-        nll_test, _ = qlearning_nll(c_test, r_test, alpha=a, delta_1=d1,
-                                     delta_2=d2, sess_ids=s_test)
-        ll_bits = -nll_test / (len(c_test) * np.log(2))
-        fold_lls.append(ll_bits)
-
-    cv_results[strategy] = fold_lls
-
-fig, ax = plt.subplots(figsize=(6, 3))
-strategies = sorted(cv_results.keys())
-positions = np.arange(len(strategies))
-bp = ax.boxplot([cv_results[s] for s in strategies], positions=positions,
-                patch_artist=True, widths=0.5)
-ax.set_xticks(positions)
-ax.set_xticklabels(strategies)
+fig, ax = plt.subplots(figsize=(4, 3))
+ax.bar(range(n_folds), fold_lls, color="#F45B69", edgecolor="white",
+       linewidth=0.5, alpha=0.85)
+ax.axhline(np.mean(fold_lls), color="#333333", ls="--", lw=0.8)
+ax.set_xlabel("Fold")
 ax.set_ylabel("CV LL (bits / trial)")
+ax.set_title(f"Mean = {np.mean(fold_lls):.4f}")
 plt.tight_layout()
 plt.show()
 ```
