@@ -1,0 +1,14 @@
+{
+  "index.qmd": {
+    "index.html": "adea298d"
+  },
+  "notebooks/01_synthetic_data.qmd": {
+    "01_synthetic_data.html": "cf3df19a"
+  },
+  "notebooks/02_glm_hmm.qmd": {
+    "02_glm_hmm.html": "b0908b6d"
+  },
+  "notebooks/03_qlearning.qmd": {
+    "03_qlearning.html": "2205af55"
+  }
+}
