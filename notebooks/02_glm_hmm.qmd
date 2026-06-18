@@ -1,0 +1,208 @@
+---
+title: "Fitting a GLM-HMM to Matching Pennies Data"
+---
+
+A GLM-HMM (Generalized Linear Model -- Hidden Markov Model) assumes that on
+each trial the agent occupies one of $K$ latent states, each with its own
+logistic-regression weights mapping recent history to the probability of
+choosing Right.  The model is fit with EM via the
+[`ssm`](https://github.com/lindermanlab/ssm) library.
+
+We use the same feature set as the mouse/human analyses in `matchingp`:
+
+| Feature | Encoding |
+|---|---|
+| **bias** | constant 1 |
+| **PrevRewardedDir** | previous choice direction (+1 R, −1 L) if rewarded, else 0 |
+| **PrevUnrewardedDir** | previous choice direction if unrewarded, else 0 |
+
+```{python}
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import ssm
+```
+
+## Load synthetic data
+
+```{python}
+df = pd.read_csv("data/synthetic_mp.csv")
+print(f"{len(df)} trials, {df['session_code'].nunique()} sessions, "
+      f"strategies: {df['strategy'].unique().tolist()}")
+```
+
+## Build GLM-HMM inputs
+
+The function below mirrors `make_hmm_glm_inputs` from
+`matchingp.modeling.train` but is self-contained.
+
+```{python}
+def make_glmhmm_inputs(df):
+    """Convert a trial-level DataFrame into the list-of-sessions format
+    expected by ssm.HMM.fit().
+
+    Returns
+    -------
+    true_choices : list of (T, 1) int arrays   -- 0=L, 1=R
+    inpts        : list of (T, 3) float arrays  -- [bias, prevRewDir, prevUnrewDir]
+    session_codes : list of str
+    """
+    true_choices, inpts, session_codes = [], [], []
+    for sess, sdf in df.groupby("session_code"):
+        agent_choice = (sdf["choice"].values == "R").astype(float)
+        reward = (sdf["reward"].values > 0).astype(float)
+        T = len(agent_choice)
+
+        bias = np.ones(T)
+
+        # previous choice direction: +1 if R, -1 if L
+        prev_dir = np.zeros(T)
+        prev_dir[1:] = np.where(agent_choice[:-1] == 1, 1, -1)
+
+        prev_reward = np.zeros(T)
+        prev_reward[1:] = reward[:-1]
+
+        prev_rewarded_dir = prev_dir * prev_reward
+        prev_unrewarded_dir = prev_dir * (1 - prev_reward)
+
+        X = np.column_stack([bias, prev_rewarded_dir, prev_unrewarded_dir])
+        y = agent_choice.astype(np.int64).reshape(-1, 1)
+
+        true_choices.append(y)
+        inpts.append(X)
+        session_codes.append(sess)
+
+    return true_choices, inpts, session_codes
+
+
+true_choices, inpts, session_codes = make_glmhmm_inputs(df)
+print(f"Sessions: {len(true_choices)}, "
+      f"input dim: {inpts[0].shape[1]}, "
+      f"total trials: {sum(len(y) for y in true_choices)}")
+```
+
+## Fit models with varying numbers of states
+
+```{python}
+num_states_list = [1, 2, 3, 4]
+obs_dim = 1
+input_dim = inpts[0].shape[1]
+num_categories = 2
+
+models = {}
+log_likelihoods = {}
+
+for K in num_states_list:
+    glmhmm = ssm.HMM(
+        K, obs_dim, input_dim,
+        observations="input_driven_obs",
+        observation_kwargs=dict(C=num_categories, prior_sigma=2),
+        transition_kwargs=dict(alpha=1, kappa=0),
+        transitions="sticky",
+    )
+    fit_ll = glmhmm.fit(true_choices, inputs=inpts, method="em",
+                        num_iters=200, tolerance=1e-3)
+    total_trials = sum(len(y) for y in true_choices)
+    ll_bits = fit_ll[-1] / (total_trials * np.log(2))
+    models[K] = glmhmm
+    log_likelihoods[K] = ll_bits
+    print(f"K={K}: LL = {ll_bits:.4f} bits/trial  ({len(fit_ll)} EM iters)")
+```
+
+## Model comparison
+
+```{python}
+#| label: fig-model-comparison
+#| fig-cap: "Log-likelihood (bits/trial) vs number of HMM states."
+fig, ax = plt.subplots(figsize=(5, 3))
+ax.plot(list(log_likelihoods.keys()), list(log_likelihoods.values()),
+        "o-", color="steelblue")
+ax.set_xlabel("Number of states K")
+ax.set_ylabel("LL (bits / trial)")
+ax.set_xticks(num_states_list)
+plt.tight_layout()
+plt.show()
+```
+
+## Inspect recovered weights
+
+The GLM-HMM fits $P(\text{Left})$ internally, so we negate the weights to
+obtain $P(\text{Right})$.
+
+```{python}
+#| label: fig-glmhmm-weights
+#| fig-cap: "GLM-HMM weights for K=3 model."
+best_K = 3
+glmhmm = models[best_K]
+weights = -glmhmm.observations.params[:, 0, :]  # (K, input_dim)
+feature_names = ["bias", "prevRewDir", "prevUnrewDir"]
+
+fig, ax = plt.subplots(figsize=(6, 4))
+x = np.arange(len(feature_names))
+width = 0.8 / best_K
+for k in range(best_K):
+    ax.bar(x + k * width, weights[k], width, label=f"State {k}")
+ax.set_xticks(x + width * (best_K - 1) / 2)
+ax.set_xticklabels(feature_names)
+ax.set_ylabel("Weight (for P(R))")
+ax.axhline(0, color="grey", lw=0.5)
+ax.legend()
+plt.tight_layout()
+plt.show()
+```
+
+## Posterior state probabilities
+
+```{python}
+#| label: fig-state-probs
+#| fig-cap: "Posterior state probabilities for six example sessions."
+posterior_probs = [
+    glmhmm.expected_states(data=y, input=x)[0]
+    for y, x in zip(true_choices, inpts)
+]
+
+fig, axes = plt.subplots(2, 3, figsize=(12, 5), sharex=True, sharey=True)
+for idx, ax in enumerate(axes.flat):
+    if idx >= len(posterior_probs):
+        ax.set_visible(False)
+        continue
+    for k in range(best_K):
+        ax.plot(posterior_probs[idx][:, k], label=f"State {k}", alpha=0.8)
+    ax.set_title(session_codes[idx], fontsize=8)
+    ax.set_ylim(-0.05, 1.05)
+if axes.flat[0].get_legend_handles_labels()[1]:
+    axes.flat[0].legend(fontsize=7, loc="upper right")
+fig.supxlabel("Trial")
+fig.supylabel("P(state)")
+plt.tight_layout()
+plt.show()
+```
+
+## State occupancy by strategy
+
+```{python}
+#| label: fig-state-occupancy
+#| fig-cap: "Dominant state per session, coloured by generating strategy."
+strategy_per_session = [
+    df.loc[df["session_code"] == sc, "strategy"].iloc[0]
+    for sc in session_codes
+]
+
+state_occ = np.array([pp.mean(axis=0) for pp in posterior_probs])
+dominant_state = state_occ.argmax(axis=1)
+
+fig, ax = plt.subplots(figsize=(6, 4))
+strategies = sorted(set(strategy_per_session))
+colours = {"biased": "tab:blue", "wsls": "tab:orange", "perseverant": "tab:green"}
+for strat in strategies:
+    mask = [s == strat for s in strategy_per_session]
+    counts = np.bincount(dominant_state[mask], minlength=best_K)
+    ax.bar(np.arange(best_K), counts, alpha=0.6, label=strat,
+           color=colours.get(strat))
+ax.set_xlabel("Dominant state")
+ax.set_ylabel("Number of sessions")
+ax.set_xticks(range(best_K))
+ax.legend()
+plt.tight_layout()
+plt.show()
+```

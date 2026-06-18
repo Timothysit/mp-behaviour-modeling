@@ -1,0 +1,17 @@
+---
+title: "Modelling Behaviour in Matching Pennies"
+---
+
+This site walks through fitting behavioural models to matching pennies data,
+where a player repeatedly chooses Left or Right against an opponent and is
+rewarded for matching (or mismatching) the opponent's choice.
+
+We cover three notebooks:
+
+1. **[Synthetic Data](notebooks/01_synthetic_data.qmd)** -- generate choice
+   sequences from known strategies (biased, win-stay-lose-switch, perseverant)
+   so we have ground-truth data to validate the models.
+2. **[GLM-HMM](notebooks/02_glm_hmm.qmd)** -- fit a Generalized Linear Model
+   with Hidden Markov Model states to recover latent behavioural strategies.
+3. **[Q-Learning](notebooks/03_qlearning.qmd)** -- fit a reinforcement-learning
+   model (Lee et al.) that tracks action values trial by trial.

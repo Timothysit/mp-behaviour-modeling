@@ -1,0 +1,33 @@
+project:
+  type: website
+  output-dir: docs
+  render:
+    - index.qmd
+    - notebooks/01_synthetic_data.qmd
+    - notebooks/02_glm_hmm.qmd
+    - notebooks/03_qlearning.qmd
+
+website:
+  title: "Modelling Behaviour in Matching Pennies"
+  navbar:
+    left:
+      - href: index.qmd
+        text: Home
+      - href: notebooks/01_synthetic_data.qmd
+        text: Synthetic Data
+      - href: notebooks/02_glm_hmm.qmd
+        text: GLM-HMM
+      - href: notebooks/03_qlearning.qmd
+        text: Q-Learning
+
+format:
+  html:
+    theme: cosmo
+    toc: true
+    code-fold: true
+
+execute:
+  freeze: auto
+  execute-dir: project
+
+jupyter: mp-behaviour-modeling
