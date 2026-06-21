@@ -302,7 +302,7 @@ for y, x in zip(true_choices, inpts):
     pR_hmm_all.append(pR_hmm)
 pR_hmm_flat = np.concatenate(pR_hmm_all)
 
-fig, axes = plt.subplots(4, 1, figsize=(14, 10),
+fig, axes = plt.subplots(4, 1, figsize=(12, 7),
                          gridspec_kw={"height_ratios": [2.5, 1, 2.5, 1]})
 
 for pair_idx in range(2):

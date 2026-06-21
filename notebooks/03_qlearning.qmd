@@ -124,7 +124,7 @@ _, logit_pR_all = qlearning_nll(choices, rewards, alpha=alpha, delta_1=d1,
 pR_all = 1.0 / (1.0 + np.exp(-logit_pR_all))
 df["pR_qlearning"] = pR_all
 
-fig, axes = plt.subplots(8, 1, figsize=(14, 16),
+fig, axes = plt.subplots(8, 1, figsize=(12, 10),
                          gridspec_kw={"height_ratios": [2, 1] * 4})
 for i in range(4):
     ax_choice = axes[2 * i]

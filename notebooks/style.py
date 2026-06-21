@@ -58,25 +58,17 @@ def apply_style():
     mpl.rcParams.update(style)
 
 
-# -- Moving-average helper ------------------------------------------------
-def moving_average(x, w):
-    return np.convolve(x, np.ones(w), "valid") / w
-
-
 # -- Choice raster (matchingp style) -------------------------------------
-def plot_choices(df, window_width=21, shade_strategy=True,
-                 fig=None, ax=None):
-    """Tick-mark choice plot mirroring ``matchingp.plots.plot_single_mp_choices``.
+def plot_choices(df, shade_strategy=True, fig=None, ax=None):
+    """Tick-mark choice plot.
 
     Left choices are drawn upward, right choices downward.  Filled circles
-    mark rewarded trials.  A smoothed P(R) line and smoothed reward rate
-    are overlaid.
+    mark rewarded trials.
     """
     if fig is None and ax is None:
-        fig, ax = plt.subplots(figsize=(12, 2.8))
+        fig, ax = plt.subplots(figsize=(12, 2.0))
 
     n = len(df)
-    trials = np.arange(n)
 
     choice = df["choice"].values
     reward = (df["reward"].values > 0).astype(int)
@@ -98,23 +90,19 @@ def plot_choices(df, window_width=21, shade_strategy=True,
 
     ax.axhline(0, color="#333333", lw=1.2, zorder=2)
 
-    # Smoothed P(R) and reward
-    choose_r = (choice == "R").astype(float)
-    if n > window_width:
-        sm_pr = moving_average(choose_r, window_width)
-        sm_rew = moving_average(reward.astype(float), window_width)
-        t_smooth = trials[window_width - 1:]
-        ax.plot(t_smooth, -1.3 + sm_pr * 0.6, color="#333333", lw=1,
-                label="P(R)")
-        ax.plot(t_smooth, -1.3 + sm_rew * 0.6, color="#22C55E", lw=1,
-                label="Reward rate")
-
-    # Strategy shading
+    # Strategy shading + legend
     if shade_strategy and "strategy" in df.columns:
         _shade_strategies(df, ax)
+        from matplotlib.patches import Patch
+        present = df["strategy"].unique()
+        handles = [Patch(facecolor=STRATEGY_COLORS.get(s, "#CCCCCC"),
+                         alpha=0.3, label=s)
+                   for s in present if s in STRATEGY_COLORS]
+        if handles:
+            ax.legend(handles=handles, loc="upper right", fontsize=7, ncol=len(handles))
 
     ax.set_xlim(0, n)
-    ax.set_ylim(-2.0, 1.25)
+    ax.set_ylim(-1.3, 1.25)
     ax.spines["left"].set_bounds(-1, 1)
     ax.set_yticks([-1, 0, 1])
     ax.set_yticklabels(["R", "", "L"])

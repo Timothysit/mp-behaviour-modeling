@@ -169,7 +169,7 @@ posterior_probs = [
     for y, x in zip(true_choices, inpts)
 ]
 
-fig, axes = plt.subplots(8, 1, figsize=(14, 16),
+fig, axes = plt.subplots(8, 1, figsize=(12, 10),
                          gridspec_kw={"height_ratios": [2, 1] * 4})
 for i in range(4):
     ax_choice = axes[2 * i]

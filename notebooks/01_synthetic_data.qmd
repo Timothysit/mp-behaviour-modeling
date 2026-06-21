@@ -190,7 +190,7 @@ generating strategy.
 ```{python}
 #| label: fig-choice-rasters
 #| fig-cap: "Choice rasters for four example sessions with different switching dynamics.  Background colours show the generating strategy."
-fig, axes = plt.subplots(4, 1, figsize=(14, 10), sharex=False)
+fig, axes = plt.subplots(4, 1, figsize=(12, 7), sharex=False)
 for ax, sess_idx in zip(axes, [0, 1, 2, 3]):
     sess_code = f"synth_{sess_idx:03d}"
     sess_df = df_all.loc[df_all["session_code"] == sess_code].reset_index(drop=True)
@@ -198,11 +198,6 @@ for ax, sess_idx in zip(axes, [0, 1, 2, 3]):
     ax.set_title(f"Session {sess_idx} — {SESSION_DYNAMICS[sess_idx % len(SESSION_DYNAMICS)]}",
                  fontsize=9)
 
-# legend
-from matplotlib.patches import Patch
-handles = [Patch(facecolor=c, alpha=0.3, label=s)
-           for s, c in STRATEGY_COLORS.items()]
-axes[0].legend(handles=handles, loc="upper right", fontsize=8, ncol=3)
 plt.tight_layout()
 plt.show()
 ```
