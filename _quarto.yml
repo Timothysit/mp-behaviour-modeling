@@ -29,6 +29,9 @@ format:
     toc: true
     code-fold: true
     fig-responsive: true
+    df-print: paged
+    css: styles.css
+    code-overflow: scroll
 
 execute:
   freeze: auto
