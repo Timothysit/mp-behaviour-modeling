@@ -31,7 +31,8 @@ jobs:
         run: |
           uv venv
           uv pip install -e .
-          uv pip install ssm@git+https://github.com/lindermanlab/ssm.git
+          uv pip install numpy cython
+          uv pip install --no-build-isolation ssm@git+https://github.com/lindermanlab/ssm.git
           uv pip install ipykernel
           source .venv/bin/activate
           python -m ipykernel install --user --name mp-behaviour-modeling
