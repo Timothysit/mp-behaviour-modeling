@@ -28,6 +28,7 @@ format:
     theme: cosmo
     toc: true
     code-fold: true
+    fig-responsive: true
 
 execute:
   freeze: auto

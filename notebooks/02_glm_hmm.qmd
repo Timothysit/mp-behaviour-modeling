@@ -141,17 +141,16 @@ glmhmm = models[best_K]
 weights = -glmhmm.observations.params[:, 0, :]  # (K, input_dim)
 feature_names = ["bias", "prevRewDir", "prevUnrewDir"]
 
-fig, ax = plt.subplots(figsize=(6, 3.5))
+fig, axes = plt.subplots(1, best_K, figsize=(10, 3), sharey=True)
 x = np.arange(len(feature_names))
-width = 0.8 / best_K
-for k in range(best_K):
-    ax.bar(x + k * width, weights[k], width, label=f"State {k}",
-           color=STATE_COLORS[k], edgecolor="white", linewidth=0.3)
-ax.set_xticks(x + width * (best_K - 1) / 2)
-ax.set_xticklabels(feature_names)
-ax.set_ylabel("Weight (for P(R))")
-ax.axhline(0, color="grey", lw=0.5)
-ax.legend()
+for k, ax in enumerate(axes):
+    ax.plot(x, weights[k], marker="o", color=STATE_COLORS[k], lw=1.5,
+            markersize=6, zorder=3)
+    ax.axhline(0, color="grey", lw=0.5)
+    ax.set_xticks(x)
+    ax.set_xticklabels(feature_names)
+    ax.set_title(f"State {k}", fontsize=10)
+axes[0].set_ylabel("Weight (for P(R))")
 plt.tight_layout()
 plt.show()
 ```
