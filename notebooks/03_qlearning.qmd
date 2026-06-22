@@ -4,22 +4,470 @@ title: "Fitting a Q-Learning Model to Matching Pennies Data"
 
 We fit a reinforcement-learning model from
 [Lee et al.](https://doi.org/10.1016/j.tics.2004.09.003) that maintains
-action values $V_L$ and $V_R$ and updates them trial by trial:
+two **action values**, $V_L$ and $V_R$ — one for each side the agent can
+choose.  These values track how good each action has been recently, and are
+used to drive the agent's choice on every trial.
+
+### Interactive demo
+
+Use the widget below to step through a **two-armed bandit** task.
+On each trial the agent chooses Left or Right.  One side has an 80% chance
+of reward while the other gives 0% — and the rewarded side **switches
+every 20 trials** (shown by background shading in the history plot).
+Watch how the action values $V_L$ and $V_R$ evolve, how the sigmoid
+converts them into a choice probability, and how the agent adapts after
+a block switch.  Adjust the sliders to see how different parameter
+settings change behaviour.
+
+```{ojs}
+//| echo: false
+
+viewof alpha = Inputs.range([0.01, 0.99], {value: 0.5, step: 0.01, label: "α (decay)"})
+viewof delta1 = Inputs.range([0, 3], {value: 1.0, step: 0.1, label: "δ₁ (reward)"})
+viewof delta2 = Inputs.range([-3, 0], {value: -1.0, step: 0.1, label: "δ₂ (no reward)"})
+```
+
+```{ojs}
+//| echo: false
+
+mutable state = ({
+  vL: 0, vR: 0, history: [],
+  _stepN: 0, _step10N: 0, _backN: 0, _resetN: 0
+})
+```
+
+```{ojs}
+//| echo: false
+
+viewof backBtn = Inputs.button("Back")
+viewof stepBtn = Inputs.button("Next Trial")
+viewof step10Btn = Inputs.button("+10 Trials")
+viewof resetBtn = Inputs.button("Reset")
+```
+
+```{ojs}
+//| echo: false
+
+// Style the buttons
+html`<style>
+  .ql-demo button {
+    padding: 6px 18px;
+    font-size: 13px;
+    font-weight: 600;
+    color: white;
+    border: none;
+    border-radius: 6px;
+    cursor: pointer;
+  }
+  .ql-demo form:nth-child(1) button { background: #888; }
+  .ql-demo form:nth-child(2) button { background: #2A9DF4; }
+  .ql-demo form:nth-child(3) button { background: #6366F1; }
+  .ql-demo form:nth-child(4) button { background: #888; }
+</style>
+<div class="ql-demo" style="display:flex; gap:8px; margin-bottom:8px;">
+  ${viewof backBtn}
+  ${viewof stepBtn}
+  ${viewof step10Btn}
+  ${viewof resetBtn}
+</div>`
+```
+
+```{ojs}
+//| echo: false
+
+// Two-armed bandit: the high-reward side (80%) switches every ~20 trials
+function banditReward(choice, trialNum) {
+  const blockLen = 20;
+  const highSide = Math.floor(trialNum / blockLen) % 2 === 0 ? "R" : "L";
+  if (choice === highSide) {
+    return Math.random() < 0.8;
+  }
+  return false;
+}
+
+function runStep(s) {
+  const pR = 1 / (1 + Math.exp(-(s.vR - s.vL)));
+  const chooseRight = Math.random() < pR;
+  const choice = chooseRight ? "R" : "L";
+  const trialNum = s.history.length;
+  const rewarded = banditReward(choice, trialNum);
+  const blockLen = 20;
+  const highSide = Math.floor(trialNum / blockLen) % 2 === 0 ? "R" : "L";
+  const d = rewarded ? delta1 : delta2;
+  const newVL = chooseRight ? alpha * s.vL : alpha * s.vL + d;
+  const newVR = chooseRight ? alpha * s.vR + d : alpha * s.vR;
+  const entry = ({
+    trial: trialNum + 1,
+    vL_before: s.vL, vR_before: s.vR, pR,
+    choice, rewarded, highSide,
+    vL_after: newVL, vR_after: newVR
+  });
+  return ({vL: newVL, vR: newVR, entry});
+}
+```
+
+```{ojs}
+//| echo: false
+//| output: false
+
+// All handlers in one cell so Quarto doesn't render extra outputs
+{
+  // Back one trial
+  const s0 = state;
+  if (backBtn > s0._backN && s0.history.length > 0) {
+    const last = s0.history[s0.history.length - 1];
+    mutable state = ({
+      vL: last.vL_before, vR: last.vR_before,
+      history: s0.history.slice(0, -1),
+      _stepN: s0._stepN, _step10N: s0._step10N,
+      _backN: backBtn, _resetN: s0._resetN
+    });
+  } else if (backBtn > s0._backN) {
+    mutable state = ({...s0, _backN: backBtn});
+  }
+
+  // Single step
+  const s1 = state;
+  if (stepBtn > s1._stepN) {
+    const r = runStep(s1);
+    mutable state = ({
+      vL: r.vL, vR: r.vR,
+      history: [...s1.history, r.entry],
+      _stepN: stepBtn, _step10N: s1._step10N,
+      _backN: s1._backN, _resetN: s1._resetN
+    });
+  }
+
+  // +10 steps
+  const s2 = state;
+  if (step10Btn > s2._step10N) {
+    let cur = ({vL: s2.vL, vR: s2.vR, history: [...s2.history],
+                _stepN: s2._stepN, _step10N: s2._step10N,
+                _backN: s2._backN, _resetN: s2._resetN});
+    for (let i = 0; i < 10; i++) {
+      const r = runStep(cur);
+      cur = ({...cur, vL: r.vL, vR: r.vR, history: [...cur.history, r.entry]});
+    }
+    mutable state = ({...cur, _stepN: s2._stepN, _step10N: step10Btn,
+                      _backN: s2._backN, _resetN: s2._resetN});
+  }
+
+  // Reset
+  const s3 = state;
+  if (resetBtn > s3._resetN) {
+    mutable state = ({
+      vL: 0, vR: 0, history: [],
+      _stepN: stepBtn, _step10N: step10Btn,
+      _backN: backBtn, _resetN: resetBtn
+    });
+  }
+}
+```
+
+```{ojs}
+//| echo: false
+
+{
+  const w = Math.min(width, 700);
+  const h = 340;
+  const margin = ({top: 30, right: 30, bottom: 30, left: 50});
+  const pw = w - margin.left - margin.right;
+  const ph = h - margin.top - margin.bottom;
+
+  const currentVL = state.vL;
+  const currentVR = state.vR;
+  const currentPR = 1 / (1 + Math.exp(-(currentVR - currentVL)));
+
+  const svg = d3.create("svg")
+    .attr("viewBox", `0 0 ${w} ${h}`)
+    .attr("width", w).attr("height", h)
+    .style("font-family", "Helvetica, Arial, sans-serif")
+    .style("max-width", "100%");
+
+  // ── Left panel: value bars ──
+  const barW = 50;
+  const barAreaW = pw * 0.28;
+  const barX = margin.left + barAreaW / 2;
+  const barMaxH = ph * 0.7;
+  const barBaseline = margin.top + ph * 0.5;
+
+  const maxVal = Math.max(Math.abs(currentVL), Math.abs(currentVR), 1.5);
+  const barScale = (barMaxH / 2) / maxVal;
+
+  svg.append("text")
+    .attr("x", barX).attr("y", margin.top + 2)
+    .attr("text-anchor", "middle").attr("font-size", 12)
+    .attr("font-weight", 600).attr("fill", "#333")
+    .text("Action values");
+
+  svg.append("line")
+    .attr("x1", barX - barW * 1.5).attr("x2", barX + barW * 1.5)
+    .attr("y1", barBaseline).attr("y2", barBaseline)
+    .attr("stroke", "#999").attr("stroke-width", 0.5);
+
+  const vlH = currentVL * barScale;
+  svg.append("rect")
+    .attr("x", barX - barW - 8).attr("width", barW)
+    .attr("y", vlH >= 0 ? barBaseline - vlH : barBaseline)
+    .attr("height", Math.max(Math.abs(vlH), 0.5))
+    .attr("fill", "#2A9DF4").attr("rx", 3).attr("opacity", 0.85);
+  svg.append("text")
+    .attr("x", barX - barW / 2 - 8).attr("y", margin.top + 20)
+    .attr("text-anchor", "middle").attr("font-size", 12)
+    .attr("fill", "#2A9DF4").attr("font-weight", 600)
+    .text(`V_L = ${currentVL.toFixed(2)}`);
+
+  const vrH = currentVR * barScale;
+  svg.append("rect")
+    .attr("x", barX + 8).attr("width", barW)
+    .attr("y", vrH >= 0 ? barBaseline - vrH : barBaseline)
+    .attr("height", Math.max(Math.abs(vrH), 0.5))
+    .attr("fill", "#F45B69").attr("rx", 3).attr("opacity", 0.85);
+  svg.append("text")
+    .attr("x", barX + barW / 2 + 8).attr("y", margin.top + 20)
+    .attr("text-anchor", "middle").attr("font-size", 12)
+    .attr("fill", "#F45B69").attr("font-weight", 600)
+    .text(`V_R = ${currentVR.toFixed(2)}`);
+
+  // ── Right panel: sigmoid curve ──
+  const sigX0 = margin.left + barAreaW + 30;
+  const sigW = pw - barAreaW - 30;
+  const sigH = ph * 0.7;
+  const sigY0 = margin.top + 16;
+
+  svg.append("text")
+    .attr("x", sigX0 + sigW / 2).attr("y", margin.top + 2)
+    .attr("text-anchor", "middle").attr("font-size", 12)
+    .attr("font-weight", 600).attr("fill", "#333")
+    .text("Choice probability (sigmoid)");
+
+  const xRange = 5;
+  const sx = d3.scaleLinear().domain([-xRange, xRange]).range([sigX0, sigX0 + sigW]);
+  const sy = d3.scaleLinear().domain([0, 1]).range([sigY0 + sigH, sigY0]);
+
+  svg.append("line")
+    .attr("x1", sigX0).attr("x2", sigX0 + sigW)
+    .attr("y1", sy(0.5)).attr("y2", sy(0.5))
+    .attr("stroke", "#ddd").attr("stroke-dasharray", "3,3");
+
+  const nPts = 100;
+  const sigPoints = d3.range(nPts + 1).map(i => {
+    const z = -xRange + (2 * xRange * i / nPts);
+    return ({x: z, y: 1 / (1 + Math.exp(-z))});
+  });
+  const line = d3.line().x(d => sx(d.x)).y(d => sy(d.y)).curve(d3.curveBasis);
+  svg.append("path")
+    .datum(sigPoints).attr("d", line)
+    .attr("fill", "none").attr("stroke", "#333").attr("stroke-width", 2);
+
+  const currentZ = currentVR - currentVL;
+  const clampedZ = Math.max(-xRange, Math.min(xRange, currentZ));
+  svg.append("circle")
+    .attr("cx", sx(clampedZ)).attr("cy", sy(currentPR))
+    .attr("r", 7).attr("fill", "#F45B69").attr("stroke", "white")
+    .attr("stroke-width", 2);
+
+  svg.append("line")
+    .attr("x1", sx(clampedZ)).attr("x2", sx(clampedZ))
+    .attr("y1", sy(currentPR)).attr("y2", sy(0))
+    .attr("stroke", "#F45B69").attr("stroke-dasharray", "3,3").attr("opacity", 0.5);
+  svg.append("line")
+    .attr("x1", sigX0).attr("x2", sx(clampedZ))
+    .attr("y1", sy(currentPR)).attr("y2", sy(currentPR))
+    .attr("stroke", "#F45B69").attr("stroke-dasharray", "3,3").attr("opacity", 0.5);
+
+  svg.append("text")
+    .attr("x", sx(clampedZ)).attr("y", sy(0) + 16)
+    .attr("text-anchor", "middle").attr("font-size", 10).attr("fill", "#666")
+    .text(`V_R−V_L = ${currentZ.toFixed(2)}`);
+  svg.append("text")
+    .attr("x", sigX0 - 6).attr("y", sy(currentPR) + 4)
+    .attr("text-anchor", "end").attr("font-size", 11).attr("fill", "#F45B69")
+    .attr("font-weight", 600)
+    .text(`P(R)=${currentPR.toFixed(2)}`);
+
+  for (const v of [0, 0.5, 1]) {
+    svg.append("text")
+      .attr("x", sigX0 - 6).attr("y", sy(v) + 4)
+      .attr("text-anchor", "end").attr("font-size", 9).attr("fill", "#999")
+      .text(v.toFixed(1));
+    svg.append("line")
+      .attr("x1", sigX0 - 3).attr("x2", sigX0)
+      .attr("y1", sy(v)).attr("y2", sy(v)).attr("stroke", "#999");
+  }
+
+  svg.append("line")
+    .attr("x1", sigX0).attr("x2", sigX0)
+    .attr("y1", sy(0)).attr("y2", sy(1))
+    .attr("stroke", "#333").attr("stroke-width", 1);
+  svg.append("line")
+    .attr("x1", sigX0).attr("x2", sigX0 + sigW)
+    .attr("y1", sy(0)).attr("y2", sy(0))
+    .attr("stroke", "#333").attr("stroke-width", 1);
+
+  return svg.node();
+}
+```
+
+```{ojs}
+//| echo: false
+
+{
+  const recent = state.history.slice(-60);
+  if (recent.length === 0) return html`<p style="color:#999; font-style:italic; font-size:13px;">
+    Press <b>Next Trial</b> to begin.</p>`;
+
+  const w = Math.min(width, 700);
+  const h = 230;
+  const margin = ({top: 10, right: 15, bottom: 65, left: 50});
+  const pw = w - margin.left - margin.right;
+  const ph = h - margin.top - margin.bottom;
+
+  const svg = d3.create("svg")
+    .attr("viewBox", `0 0 ${w} ${h}`)
+    .attr("width", w).attr("height", h)
+    .style("font-family", "Helvetica, Arial, sans-serif")
+    .style("max-width", "100%");
+
+  const trials = recent.map(d => d.trial);
+  const sx = d3.scaleLinear()
+    .domain([d3.min(trials) - 0.5, d3.max(trials) + 0.5])
+    .range([margin.left, margin.left + pw]);
+  const sy = d3.scaleLinear().domain([0, 1]).range([margin.top + ph, margin.top]);
+
+  // Block shading: highlight which side is the high-reward side
+  let blockStart = recent[0].trial;
+  let blockSide = recent[0].highSide;
+  for (let i = 1; i <= recent.length; i++) {
+    const cur = i < recent.length ? recent[i] : null;
+    if (cur === null || cur.highSide !== blockSide) {
+      const x1 = sx(blockStart - 0.5);
+      const x2 = sx((cur ? cur.trial : recent[recent.length - 1].trial + 1) - 0.5);
+      svg.append("rect")
+        .attr("x", x1).attr("y", sy(1))
+        .attr("width", x2 - x1).attr("height", sy(0) - sy(1))
+        .attr("fill", blockSide === "R" ? "#F45B69" : "#2A9DF4")
+        .attr("opacity", 0.07);
+      if (cur) { blockStart = cur.trial; blockSide = cur.highSide; }
+    }
+  }
+
+  svg.append("line")
+    .attr("x1", margin.left).attr("x2", margin.left + pw)
+    .attr("y1", sy(0.5)).attr("y2", sy(0.5))
+    .attr("stroke", "#ddd").attr("stroke-dasharray", "3,3");
+
+  const line = d3.line().x(d => sx(d.trial)).y(d => sy(d.pR));
+  svg.append("path")
+    .datum(recent).attr("d", line)
+    .attr("fill", "none").attr("stroke", "#333").attr("stroke-width", 1.5);
+
+  for (const d of recent) {
+    const color = d.choice === "R" ? "#F45B69" : "#2A9DF4";
+    const yPos = d.choice === "R" ? sy(0.95) : sy(0.05);
+    svg.append("circle")
+      .attr("cx", sx(d.trial)).attr("cy", yPos).attr("r", 3.5)
+      .attr("fill", d.rewarded ? color : "none")
+      .attr("stroke", color).attr("stroke-width", 1.5);
+  }
+
+  svg.append("line")
+    .attr("x1", margin.left).attr("x2", margin.left)
+    .attr("y1", sy(0)).attr("y2", sy(1)).attr("stroke", "#333");
+  for (const v of [0, 0.5, 1]) {
+    svg.append("text")
+      .attr("x", margin.left - 6).attr("y", sy(v) + 4)
+      .attr("text-anchor", "end").attr("font-size", 9).attr("fill", "#999")
+      .text(v.toFixed(1));
+  }
+  svg.append("text")
+    .attr("x", margin.left - 6).attr("y", margin.top + ph / 2)
+    .attr("text-anchor", "middle").attr("font-size", 11).attr("fill", "#333")
+    .attr("transform", `rotate(-90, ${margin.left - 35}, ${margin.top + ph / 2})`)
+    .text("P(R)");
+
+  svg.append("line")
+    .attr("x1", margin.left).attr("x2", margin.left + pw)
+    .attr("y1", sy(0)).attr("y2", sy(0)).attr("stroke", "#333");
+  svg.append("text")
+    .attr("x", margin.left + pw / 2).attr("y", h - 4)
+    .attr("text-anchor", "middle").attr("font-size", 11).attr("fill", "#333")
+    .text("Trial");
+
+  // Legend — below the plot
+  const lgY = h - 30;
+  const lg = svg.append("g")
+    .attr("transform", `translate(${margin.left}, ${lgY})`);
+
+  // Row 1: choices
+  lg.append("circle").attr("cx", 0).attr("cy", 0).attr("r", 5)
+    .attr("fill", "#2A9DF4").attr("stroke", "#2A9DF4");
+  lg.append("text").attr("x", 10).attr("y", 5)
+    .attr("font-size", 12).attr("fill", "#555").text("L choice");
+
+  lg.append("circle").attr("cx", 100).attr("cy", 0).attr("r", 5)
+    .attr("fill", "#F45B69").attr("stroke", "#F45B69");
+  lg.append("text").attr("x", 110).attr("y", 5)
+    .attr("font-size", 12).attr("fill", "#555").text("R choice");
+
+  lg.append("circle").attr("cx", 210).attr("cy", 0).attr("r", 5)
+    .attr("fill", "none").attr("stroke", "#888").attr("stroke-width", 1.5);
+  lg.append("text").attr("x", 220).attr("y", 5)
+    .attr("font-size", 12).attr("fill", "#555").text("= no reward");
+
+  // Row 1 continued: block shading
+  lg.append("rect").attr("x", 340).attr("y", -7).attr("width", 16).attr("height", 14)
+    .attr("fill", "#F45B69").attr("opacity", 0.2).attr("rx", 2);
+  lg.append("text").attr("x", 360).attr("y", 5)
+    .attr("font-size", 12).attr("fill", "#555").text("R rewarded");
+
+  lg.append("rect").attr("x", 460).attr("y", -7).attr("width", 16).attr("height", 14)
+    .attr("fill", "#2A9DF4").attr("opacity", 0.2).attr("rx", 2);
+  lg.append("text").attr("x", 480).attr("y", 5)
+    .attr("font-size", 12).attr("fill", "#555").text("L rewarded");
+
+  return svg.node();
+}
+```
+
+### Value update
+
+After each trial, the value of the **chosen** side $c$ (where $c$ is either
+$L$ or $R$) is updated:
 
 $$
 V_c \leftarrow \alpha \, V_c + \delta
 $$
 
-where $\alpha \in (0,1)$ is a decay/memory parameter, $\delta_1$ is the
-update after a reward, and $\delta_2$ after no reward (applied to the chosen
-side only).  Choice probability is softmax over the value difference:
+- $\alpha \in (0,1)$ is a **decay / memory** parameter — it controls how
+  quickly old outcomes are forgotten.  Values close to 1 mean long memory;
+  values close to 0 mean only the most recent trial matters.
+- $\delta$ depends on the outcome:
+    - $\delta_1$ is added after a **reward** (typically positive, reinforcing
+      the chosen action).
+    - $\delta_2$ is added after **no reward** (typically negative,
+      discouraging the chosen action).
+- The **unchosen** side's value is not shifted by $\delta$ — it simply
+  decays: $V_u \leftarrow \alpha \, V_u$.
+
+### Choice rule
+
+On each trial the agent picks Right with probability given by the
+**sigmoid** (logistic) function applied to the value difference:
 
 $$
 P(R) = \frac{1}{1 + \exp(-(V_R - V_L))}
 $$
 
-The three free parameters $(\alpha, \delta_1, \delta_2)$ are fit by maximising
-the log-likelihood.
+When $V_R > V_L$ the agent is more likely to choose Right; when
+$V_L > V_R$ it favours Left; when the values are equal the choice is
+a coin flip ($P(R) = 0.5$).
+
+### Parameters
+
+The three free parameters $(\alpha, \delta_1, \delta_2)$ are fit by
+maximising the log-likelihood (see the
+[Fundamentals page](00_fundamentals.qmd#log-likelihood) for background).
 
 ```{python}
 import numpy as np

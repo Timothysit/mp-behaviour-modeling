@@ -16,6 +16,423 @@ We use the same feature set as the mouse/human analyses in `matchingp`:
 | **PrevRewardedDir** | previous choice direction (+1 R, −1 L) if rewarded, else 0 |
 | **PrevUnrewardedDir** | previous choice direction if unrewarded, else 0 |
 
+### Interactive demo
+
+The widget below simulates a 3-state GLM-HMM.  Each state has its own
+probability of choosing Right, and on each trial the model may stay in its
+current state or switch to another.  Step through trials and watch how the
+hidden state drives choice behaviour.
+
+```{ojs}
+//| echo: false
+
+viewof pR0 = Inputs.range([0, 1], {value: 0.15, step: 0.01, label: "P(R) — Left-biased state"})
+viewof pR1 = Inputs.range([0, 1], {value: 0.85, step: 0.01, label: "P(R) — Right-biased state"})
+viewof pR2 = Inputs.range([0, 1], {value: 0.50, step: 0.01, label: "P(R) — Stochastic state"})
+viewof stickiness = Inputs.range([0.5, 0.99], {value: 0.90, step: 0.01, label: "Self-transition prob."})
+```
+
+```{ojs}
+//| echo: false
+
+mutable hmmState = ({
+  currentK: 0, history: [],
+  _stepN: 0, _step10N: 0, _backN: 0, _resetN: 0
+})
+```
+
+```{ojs}
+//| echo: false
+
+viewof hmmBackBtn = Inputs.button("Back")
+viewof hmmStepBtn = Inputs.button("Next Trial")
+viewof hmmStep10Btn = Inputs.button("+10 Trials")
+viewof hmmResetBtn = Inputs.button("Reset")
+```
+
+```{ojs}
+//| echo: false
+
+html`<style>
+  .hmm-demo button {
+    padding: 6px 18px;
+    font-size: 13px;
+    font-weight: 600;
+    color: white;
+    border: none;
+    border-radius: 6px;
+    cursor: pointer;
+  }
+  .hmm-demo form:nth-child(1) button { background: #888; }
+  .hmm-demo form:nth-child(2) button { background: #2A9DF4; }
+  .hmm-demo form:nth-child(3) button { background: #6366F1; }
+  .hmm-demo form:nth-child(4) button { background: #888; }
+</style>
+<div class="hmm-demo" style="display:flex; gap:8px; margin-bottom:8px;">
+  ${viewof hmmBackBtn}
+  ${viewof hmmStepBtn}
+  ${viewof hmmStep10Btn}
+  ${viewof hmmResetBtn}
+</div>`
+```
+
+```{ojs}
+//| echo: false
+
+stateNames = ["Left-biased", "Right-biased", "Stochastic"]
+stateColors = ["#2A9DF4", "#F45B69", "#333333"]
+statePRs = [pR0, pR1, pR2]
+
+function hmmRunStep(s) {
+  const pRs = statePRs;
+  const k = s.currentK;
+  const pR = pRs[k];
+  const chooseRight = Math.random() < pR;
+  const choice = chooseRight ? "R" : "L";
+
+  // Transition: stay with prob stickiness, else uniform over the other two
+  let nextK = k;
+  if (Math.random() >= stickiness) {
+    const others = [0, 1, 2].filter(x => x !== k);
+    nextK = others[Math.floor(Math.random() * others.length)];
+  }
+
+  const entry = ({
+    trial: s.history.length + 1,
+    state: k, nextState: nextK,
+    pR, choice,
+  });
+  return ({currentK: nextK, entry});
+}
+```
+
+```{ojs}
+//| echo: false
+//| output: false
+
+{
+  // Back
+  const s0 = hmmState;
+  if (hmmBackBtn > s0._backN && s0.history.length > 0) {
+    const last = s0.history[s0.history.length - 1];
+    mutable hmmState = ({
+      currentK: last.state,
+      history: s0.history.slice(0, -1),
+      _stepN: s0._stepN, _step10N: s0._step10N,
+      _backN: hmmBackBtn, _resetN: s0._resetN
+    });
+  } else if (hmmBackBtn > s0._backN) {
+    mutable hmmState = ({...s0, _backN: hmmBackBtn});
+  }
+
+  // Single step
+  const s1 = hmmState;
+  if (hmmStepBtn > s1._stepN) {
+    const r = hmmRunStep(s1);
+    mutable hmmState = ({
+      currentK: r.currentK,
+      history: [...s1.history, r.entry],
+      _stepN: hmmStepBtn, _step10N: s1._step10N,
+      _backN: s1._backN, _resetN: s1._resetN
+    });
+  }
+
+  // +10 steps
+  const s2 = hmmState;
+  if (hmmStep10Btn > s2._step10N) {
+    let cur = ({currentK: s2.currentK, history: [...s2.history],
+                _stepN: s2._stepN, _step10N: s2._step10N,
+                _backN: s2._backN, _resetN: s2._resetN});
+    for (let i = 0; i < 10; i++) {
+      const r = hmmRunStep(cur);
+      cur = ({...cur, currentK: r.currentK, history: [...cur.history, r.entry]});
+    }
+    mutable hmmState = ({...cur, _stepN: s2._stepN, _step10N: hmmStep10Btn,
+                         _backN: s2._backN, _resetN: s2._resetN});
+  }
+
+  // Reset
+  const s3 = hmmState;
+  if (hmmResetBtn > s3._resetN) {
+    mutable hmmState = ({
+      currentK: 0, history: [],
+      _stepN: hmmStepBtn, _step10N: hmmStep10Btn,
+      _backN: hmmBackBtn, _resetN: hmmResetBtn
+    });
+  }
+}
+```
+
+```{ojs}
+//| echo: false
+
+{
+  const w = Math.min(width, 700);
+  const h = 340;
+  const margin = ({top: 15, right: 20, bottom: 15, left: 20});
+  const pw = w - margin.left - margin.right;
+  const currentK = hmmState.currentK;
+  const switchP = (1 - stickiness) / 2;
+
+  const svg = d3.create("svg")
+    .attr("viewBox", `0 0 ${w} ${h}`)
+    .attr("width", w).attr("height", h)
+    .style("font-family", "Helvetica, Arial, sans-serif")
+    .style("max-width", "100%");
+
+  // Triangle layout: 0=Left-biased (top-left), 1=Right-biased (top-right), 2=Stochastic (bottom-center)
+  const nodeX = [margin.left + pw * 0.22, margin.left + pw * 0.78, margin.left + pw * 0.5];
+  const nodeY = [70, 70, 195];
+  const radius = 42;
+
+  // Arrowhead marker
+  svg.append("defs").append("marker")
+    .attr("id", "arrowhead").attr("viewBox", "0 0 10 10")
+    .attr("refX", 8).attr("refY", 5)
+    .attr("markerWidth", 6).attr("markerHeight", 6)
+    .attr("orient", "auto-start-reverse")
+    .append("path").attr("d", "M 0 0 L 10 5 L 0 10 z").attr("fill", "#aaa");
+
+  // Draw transition arrows between each pair of states
+  const pairs = [[0,1],[1,0],[0,2],[2,0],[1,2],[2,1]];
+  for (const [from, to] of pairs) {
+    const dx = nodeX[to] - nodeX[from];
+    const dy = nodeY[to] - nodeY[from];
+    const dist = Math.sqrt(dx * dx + dy * dy);
+    const nx = dx / dist;
+    const ny = dy / dist;
+
+    // Start/end at circle edge
+    const x1 = nodeX[from] + nx * (radius + 4);
+    const y1 = nodeY[from] + ny * (radius + 4);
+    const x2 = nodeX[to] - nx * (radius + 8);
+    const y2 = nodeY[to] - ny * (radius + 8);
+
+    // Offset perpendicular so forward/reverse arrows don't overlap
+    const perpX = -ny * 8;
+    const perpY = nx * 8;
+
+    svg.append("line")
+      .attr("x1", x1 + perpX).attr("y1", y1 + perpY)
+      .attr("x2", x2 + perpX).attr("y2", y2 + perpY)
+      .attr("stroke", "#bbb").attr("stroke-width", 1.2)
+      .attr("marker-end", "url(#arrowhead)");
+
+    // Label at midpoint, offset outward
+    const mx = (x1 + x2) / 2 + perpX * 1.8;
+    const my = (y1 + y2) / 2 + perpY * 1.8;
+    svg.append("text")
+      .attr("x", mx).attr("y", my + 4)
+      .attr("text-anchor", "middle").attr("font-size", 10).attr("fill", "#999")
+      .text(switchP.toFixed(2));
+  }
+
+  // Self-transition loops
+  const loopAngles = [-Math.PI / 2, -Math.PI / 2, Math.PI / 2];
+  for (let k = 0; k < 3; k++) {
+    const ang = loopAngles[k];
+    const lx1 = nodeX[k] + Math.cos(ang - 0.4) * (radius + 2);
+    const ly1 = nodeY[k] + Math.sin(ang - 0.4) * (radius + 2);
+    const lx2 = nodeX[k] + Math.cos(ang + 0.4) * (radius + 2);
+    const ly2 = nodeY[k] + Math.sin(ang + 0.4) * (radius + 2);
+    const cpDist = 40;
+    const cpx = nodeX[k] + Math.cos(ang) * (radius + cpDist);
+    const cpy = nodeY[k] + Math.sin(ang) * (radius + cpDist);
+
+    svg.append("path")
+      .attr("d", `M${lx1},${ly1} Q${cpx},${cpy} ${lx2},${ly2}`)
+      .attr("fill", "none").attr("stroke", "#bbb").attr("stroke-width", 1.2)
+      .attr("marker-end", "url(#arrowhead)");
+
+    const labelDist = radius + cpDist + 4;
+    svg.append("text")
+      .attr("x", nodeX[k] + Math.cos(ang) * labelDist)
+      .attr("y", nodeY[k] + Math.sin(ang) * labelDist + 4)
+      .attr("text-anchor", "middle").attr("font-size", 10).attr("fill", "#999")
+      .text(stickiness.toFixed(2));
+  }
+
+  // State circles and labels
+  for (let k = 0; k < 3; k++) {
+    svg.append("circle")
+      .attr("cx", nodeX[k]).attr("cy", nodeY[k]).attr("r", radius)
+      .attr("fill", k === currentK ? stateColors[k] : "white")
+      .attr("stroke", stateColors[k])
+      .attr("stroke-width", k === currentK ? 3 : 2)
+      .attr("opacity", k === currentK ? 0.2 : 1);
+    if (k === currentK) {
+      svg.append("circle")
+        .attr("cx", nodeX[k]).attr("cy", nodeY[k]).attr("r", radius)
+        .attr("fill", "none")
+        .attr("stroke", stateColors[k]).attr("stroke-width", 3);
+    }
+    svg.append("text")
+      .attr("x", nodeX[k]).attr("y", nodeY[k] - 6)
+      .attr("text-anchor", "middle").attr("font-size", 11)
+      .attr("font-weight", 600)
+      .attr("fill", k === currentK ? stateColors[k] : "#555")
+      .text(stateNames[k]);
+    svg.append("text")
+      .attr("x", nodeX[k]).attr("y", nodeY[k] + 14)
+      .attr("text-anchor", "middle").attr("font-size", 12)
+      .attr("fill", k === currentK ? stateColors[k] : "#888")
+      .text(`P(R) = ${statePRs[k].toFixed(2)}`);
+  }
+
+  // Last trial info
+  const hist = hmmState.history;
+  const infoY = 265;
+  if (hist.length > 0) {
+    const last = hist[hist.length - 1];
+    svg.append("text")
+      .attr("x", w / 2).attr("y", infoY)
+      .attr("text-anchor", "middle").attr("font-size", 13).attr("fill", "#333")
+      .text(`Trial ${last.trial}: chose ${last.choice} from ${stateNames[last.state]} state`);
+    if (last.state !== last.nextState) {
+      svg.append("text")
+        .attr("x", w / 2).attr("y", infoY + 20)
+        .attr("text-anchor", "middle").attr("font-size", 12).attr("fill", "#F59E0B")
+        .attr("font-weight", 600)
+        .text(`→ switched to ${stateNames[last.nextState]}`);
+    }
+  } else {
+    svg.append("text")
+      .attr("x", w / 2).attr("y", infoY)
+      .attr("text-anchor", "middle").attr("font-size", 13)
+      .attr("fill", "#999").attr("font-style", "italic")
+      .text("Press Next Trial to begin.");
+  }
+
+  // State occupancy bar
+  if (hist.length > 0) {
+    const barY = 305;
+    const barH = 14;
+    const totalT = hist.length;
+    let xOff = margin.left;
+    for (let k = 0; k < 3; k++) {
+      const count = hist.filter(d => d.state === k).length;
+      const frac = count / totalT;
+      const bw = frac * pw;
+      if (bw > 0) {
+        svg.append("rect")
+          .attr("x", xOff).attr("y", barY)
+          .attr("width", bw).attr("height", barH)
+          .attr("fill", stateColors[k]).attr("opacity", 0.7).attr("rx", 2);
+        if (frac > 0.08) {
+          svg.append("text")
+            .attr("x", xOff + bw / 2).attr("y", barY + barH / 2 + 4)
+            .attr("text-anchor", "middle").attr("font-size", 10)
+            .attr("fill", "white").attr("font-weight", 600)
+            .text(`${Math.round(frac * 100)}%`);
+        }
+        xOff += bw;
+      }
+    }
+    svg.append("text")
+      .attr("x", margin.left).attr("y", barY - 5)
+      .attr("font-size", 10).attr("fill", "#888")
+      .text("State occupancy:");
+  }
+
+  return svg.node();
+}
+```
+
+```{ojs}
+//| echo: false
+
+{
+  const recent = hmmState.history.slice(-60);
+  if (recent.length === 0) return html``;
+
+  const w = Math.min(width, 700);
+  const h = 220;
+  const margin = ({top: 10, right: 15, bottom: 60, left: 50});
+  const pw = w - margin.left - margin.right;
+  const ph = h - margin.top - margin.bottom;
+
+  const svg = d3.create("svg")
+    .attr("viewBox", `0 0 ${w} ${h}`)
+    .attr("width", w).attr("height", h)
+    .style("font-family", "Helvetica, Arial, sans-serif")
+    .style("max-width", "100%");
+
+  const trials = recent.map(d => d.trial);
+  const sx = d3.scaleLinear()
+    .domain([d3.min(trials) - 0.5, d3.max(trials) + 0.5])
+    .range([margin.left, margin.left + pw]);
+  const choiceY = ({R: margin.top + 10, L: margin.top + ph - 10});
+
+  // State shading
+  let blockStart = recent[0].trial;
+  let blockK = recent[0].state;
+  for (let i = 1; i <= recent.length; i++) {
+    const cur = i < recent.length ? recent[i] : null;
+    if (cur === null || cur.state !== blockK) {
+      const x1 = sx(blockStart - 0.5);
+      const x2 = sx((cur ? cur.trial : recent[recent.length - 1].trial + 1) - 0.5);
+      svg.append("rect")
+        .attr("x", x1).attr("y", margin.top)
+        .attr("width", x2 - x1).attr("height", ph)
+        .attr("fill", stateColors[blockK]).attr("opacity", 0.1);
+      if (cur) { blockStart = cur.trial; blockK = cur.state; }
+    }
+  }
+
+  // Center line
+  svg.append("line")
+    .attr("x1", margin.left).attr("x2", margin.left + pw)
+    .attr("y1", margin.top + ph / 2).attr("y2", margin.top + ph / 2)
+    .attr("stroke", "#ddd").attr("stroke-dasharray", "3,3");
+
+  // Choice ticks
+  for (const d of recent) {
+    const color = d.choice === "R" ? "#F45B69" : "#2A9DF4";
+    const y1 = margin.top + ph / 2;
+    const y2 = d.choice === "R" ? margin.top + ph - 5 : margin.top + 5;
+    svg.append("line")
+      .attr("x1", sx(d.trial)).attr("x2", sx(d.trial))
+      .attr("y1", y1).attr("y2", y2)
+      .attr("stroke", color).attr("stroke-width", 1.5).attr("opacity", 0.8);
+  }
+
+  // Labels
+  svg.append("text")
+    .attr("x", margin.left - 6).attr("y", margin.top + 12)
+    .attr("text-anchor", "end").attr("font-size", 11)
+    .attr("fill", "#2A9DF4").attr("font-weight", 600).text("L");
+  svg.append("text")
+    .attr("x", margin.left - 6).attr("y", margin.top + ph - 4)
+    .attr("text-anchor", "end").attr("font-size", 11)
+    .attr("fill", "#F45B69").attr("font-weight", 600).text("R");
+
+  // X-axis
+  svg.append("line")
+    .attr("x1", margin.left).attr("x2", margin.left + pw)
+    .attr("y1", margin.top + ph).attr("y2", margin.top + ph)
+    .attr("stroke", "#333");
+  svg.append("text")
+    .attr("x", margin.left + pw / 2).attr("y", margin.top + ph + 18)
+    .attr("text-anchor", "middle").attr("font-size", 11).attr("fill", "#333")
+    .text("Trial");
+
+  // Legend below plot
+  const lgY = h - 22;
+  const lg = svg.append("g").attr("transform", `translate(${margin.left}, ${lgY})`);
+  for (let k = 0; k < 3; k++) {
+    const xOff = k * 160;
+    lg.append("rect").attr("x", xOff).attr("y", -7).attr("width", 14).attr("height", 14)
+      .attr("fill", stateColors[k]).attr("opacity", 0.25).attr("rx", 2);
+    lg.append("text").attr("x", xOff + 20).attr("y", 5)
+      .attr("font-size", 12).attr("fill", "#555").text(stateNames[k]);
+  }
+
+  return svg.node();
+}
+```
+
+---
+
 ```{python}
 import numpy as np
 import pandas as pd
