@@ -102,10 +102,16 @@ def plot_choices(df, shade_strategy=True, fig=None, ax=None):
             ax.legend(handles=handles, loc="upper right", fontsize=7, ncol=len(handles))
 
     ax.set_xlim(0, n)
-    ax.set_ylim(-1.3, 1.25)
+    ax.set_ylim(-1.3, 1.55)
     ax.spines["left"].set_bounds(-1, 1)
     ax.set_yticks([-1, 0, 1])
-    ax.set_yticklabels(["R", "", "L"])
+    ax.set_yticklabels([])
+    ax.text(-0.01, 1.3, "L", transform=ax.get_yaxis_transform(),
+            ha="right", va="center", fontsize=10, color=CHOICE_COLORS["L"],
+            fontweight="bold")
+    ax.text(-0.01, -1.3, "R", transform=ax.get_yaxis_transform(),
+            ha="right", va="center", fontsize=10, color=CHOICE_COLORS["R"],
+            fontweight="bold")
     ax.set_xlabel("Trial")
 
     return fig, ax

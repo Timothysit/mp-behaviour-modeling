@@ -88,24 +88,40 @@ print(f"Sessions: {len(true_choices)}, "
 ## Fit models with varying numbers of states
 
 ```{python}
-num_states_list = [1, 2, 3, 4]
-obs_dim = 1
-input_dim = inpts[0].shape[1]
-num_categories = 2
+# -- Sweep configuration --------------------------------------------------
+num_states_list = [1, 2, 3, 4]  # candidate numbers of hidden states (K)
+obs_dim = 1                      # single binary observation per trial (L/R)
+input_dim = inpts[0].shape[1]   # number of GLM regressors (bias + history features)
+num_categories = 2               # binary choice: Left or Right
 
 models = {}
 log_likelihoods = {}
 
 for K in num_states_list:
     glmhmm = ssm.HMM(
-        K, obs_dim, input_dim,
-        observations="input_driven_obs",
-        observation_kwargs=dict(C=num_categories, prior_sigma=2),
-        transition_kwargs=dict(alpha=1, kappa=0),
-        transitions="sticky",
+        K,                                # number of hidden states
+        obs_dim,                          # observation dimensionality
+        input_dim,                        # number of input (design-matrix) columns
+        observations="input_driven_obs",  # GLM emission model (logistic regression per state)
+        observation_kwargs=dict(
+            C=num_categories,             # number of choice categories
+            prior_sigma=2,                # std of Gaussian prior on GLM weights (regularisation)
+        ),
+        transition_kwargs=dict(
+            alpha=1,                      # Dirichlet concentration for transition rows
+            kappa=0,                      # extra self-transition weight (0 = no stickiness bias)
+        ),
+        transitions="sticky",            # sticky-HMM transition model
     )
+
+    # Fit via Expectation-Maximisation
+    # true_choices: list of (T_session, 1) arrays — observed choices per session
+    # inpts:        list of (T_session, input_dim) arrays — design matrices per session
     fit_ll = glmhmm.fit(true_choices, inputs=inpts, method="em",
-                        num_iters=200, tolerance=1e-3)
+                        num_iters=200,    # maximum EM iterations
+                        tolerance=1e-3)   # convergence threshold (ΔLL)
+
+    # Normalise final log-likelihood to bits per trial for comparability
     total_trials = sum(len(y) for y in true_choices)
     ll_bits = fit_ll[-1] / (total_trials * np.log(2))
     models[K] = glmhmm
@@ -175,14 +191,21 @@ for i in range(4):
     ax_state = axes[2 * i + 1]
     sess_code = session_codes[i]
     sess_df = df.loc[df["session_code"] == sess_code].reset_index(drop=True)
+    n_trials = len(sess_df)
 
     plot_choices(sess_df, shade_strategy=True, fig=fig, ax=ax_choice)
     ax_choice.set_title(f"Session: {sess_code}", fontsize=9)
     ax_choice.set_xlabel("")
 
+    # Remove spines from the choice raster
+    for spine in ax_choice.spines.values():
+        spine.set_visible(False)
+    ax_choice.tick_params(left=False)
+
     for k in range(best_K):
         ax_state.plot(posterior_probs[i][:, k], color=STATE_COLORS[k],
                       label=f"State {k}", alpha=0.85, lw=1)
+    ax_state.set_xlim(0, n_trials)
     ax_state.set_ylim(-0.05, 1.05)
     ax_state.spines["left"].set_bounds(0, 1)
     ax_state.set_yticks([0, 0.5, 1])

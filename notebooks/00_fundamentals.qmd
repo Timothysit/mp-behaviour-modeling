@@ -1,0 +1,385 @@
+---
+title: "Fundamentals"
+---
+
+This page covers the core Python, mathematics, and machine learning concepts
+used throughout the tutorial notebooks.  Each section links to the specific
+notebook code where the concept appears, so you can see it applied in context.
+
+
+# Python fundamentals
+
+## Variables and assignment
+
+A variable stores a value so you can refer to it later.  Python uses `=` for
+assignment — the name on the left gets the value on the right.
+
+```python
+n_sessions = 20
+alpha = 0.5
+name = "synth_001"
+```
+
+The type is inferred automatically: `20` is an integer, `0.5` is a float,
+and `"synth_001"` is a string.
+
+**Used in:** the session count and model parameters throughout the notebooks,
+for example in
+[Synthetic Data — Generate sessions](01_synthetic_data.qmd#generate-sessions)
+(`n_sessions = 20`) and
+[Q-Learning — Q-learning model](03_qlearning.qmd#q-learning-model)
+(`alpha=0.5, delta_1=1.0`).
+
+
+## `for` loops
+
+A `for` loop repeats a block of code once for each item in a sequence
+(a list, a range of numbers, rows of a DataFrame, etc.).
+
+```python
+for i in range(4):
+    print(i)
+# prints: 0, 1, 2, 3
+```
+
+The indented body runs once per iteration, with `i` taking each value in
+turn.  `range(4)` produces the integers 0, 1, 2, 3.
+
+You can also loop over more complex sequences:
+
+```python
+animals = ["cat", "dog", "fish"]
+for animal in animals:
+    print(animal)
+```
+
+**Used in:**
+
+- [Synthetic Data — Strategy generators](01_synthetic_data.qmd#strategy-generators) —
+  the WSLS and perseverant generators loop over trials with `for t in range(n_trials):`
+  to build up a choice sequence one trial at a time.
+- [GLM-HMM — Fit models](02_glm_hmm.qmd#fit-models-with-varying-numbers-of-states) —
+  `for K in num_states_list:` fits a separate HMM for each candidate number
+  of hidden states.
+- [Q-Learning — Q-learning model](03_qlearning.qmd#q-learning-model) —
+  the inner loop `for t in range(T):` steps through every trial to update
+  action values.
+- [Model Comparison — Run cross-validation](04_model_comparison.qmd#run-cross-validation) —
+  `for cv_i in range(num_folds):` runs the full fitting pipeline once per
+  cross-validation fold.
+
+
+## `if` / `elif` / `else` statements
+
+Conditional statements let code take different paths depending on whether a
+condition is true or false.
+
+```python
+reward = 1
+
+if reward == 1:
+    print("Won!")
+else:
+    print("Lost.")
+```
+
+You can chain multiple conditions with `elif` (short for "else if"):
+
+```python
+choice = "L"
+
+if choice == "L":
+    direction = -1
+elif choice == "R":
+    direction = 1
+else:
+    direction = 0
+```
+
+**Used in:**
+
+- [Synthetic Data — Strategy generators](01_synthetic_data.qmd#strategy-generators) —
+  `if prev_won: ideal = c` (stay) / `else: ideal = 1 - c` (switch) is the
+  core win-stay-lose-switch logic.
+- [Q-Learning — Q-learning model](03_qlearning.qmd#q-learning-model) —
+  nested `if/else` blocks select the value update depending on which action
+  was chosen and whether it was rewarded:
+  `if choices[t] == 0:` … `delta_l = delta_1 if rewards[t] == 1 else delta_2`.
+
+
+## Functions (`def`)
+
+A function packages reusable logic behind a name.  You *define* it with
+`def`, list its *parameters* in parentheses, and *return* a result.
+
+```python
+def add(a, b):
+    return a + b
+
+result = add(3, 5)   # result is 8
+```
+
+Parameters can have *default values*, which are used when the caller
+doesn't supply them:
+
+```python
+def greet(name, greeting="Hello"):
+    return f"{greeting}, {name}!"
+
+greet("Alice")              # "Hello, Alice!"
+greet("Bob", greeting="Hi") # "Hi, Bob!"
+```
+
+**Used in:**
+
+- [Synthetic Data — Opponent and reward](01_synthetic_data.qmd#opponent-and-reward) —
+  `def make_opponent_choices(n_trials, p_right=0.5, rng=rng)` generates
+  random opponent actions with a configurable bias.
+- [Synthetic Data — Strategy generators](01_synthetic_data.qmd#strategy-generators) —
+  `def biased_strategy(...)`, `def wsls_strategy(...)`,
+  `def perseverant_strategy(...)` each encapsulate one behavioural policy.
+- [GLM-HMM — Build GLM-HMM inputs](02_glm_hmm.qmd#build-glm-hmm-inputs) —
+  `def make_glmhmm_inputs(df)` converts raw trial data into the array
+  format required by `ssm`.
+- [Q-Learning — Q-learning model](03_qlearning.qmd#q-learning-model) —
+  `def qlearning_nll(...)` computes the negative log-likelihood, and
+  `def fit_qlearning(...)` wraps the optimiser.
+
+
+## Dictionaries
+
+A dictionary maps *keys* to *values*.  You create one with curly braces
+and look up values by key.
+
+```python
+params = {"alpha": 0.5, "delta_1": 1.0, "delta_2": -1.0}
+print(params["alpha"])   # 0.5
+```
+
+You can add or update entries by assigning to a key:
+
+```python
+params["alpha"] = 0.8
+```
+
+**Used in:**
+
+- [Synthetic Data — Strategy-switching dynamics](01_synthetic_data.qmd#strategy-switching-dynamics) —
+  `STRATEGIES = {"biased": biased_strategy, ...}` maps strategy names to
+  their generator functions.
+- [GLM-HMM — Fit models](02_glm_hmm.qmd#fit-models-with-varying-numbers-of-states) —
+  `models = {}` and `log_likelihoods = {}` store fitted models keyed by
+  the number of states `K`.
+
+
+## List comprehensions
+
+A list comprehension builds a list in one line by applying an expression to
+each element of a sequence.
+
+```python
+squares = [x ** 2 for x in range(5)]
+# [0, 1, 4, 9, 16]
+```
+
+It is equivalent to a `for` loop that appends to a list, but more concise:
+
+```python
+squares = []
+for x in range(5):
+    squares.append(x ** 2)
+```
+
+**Used in:**
+
+- [Synthetic Data — Generate sessions](01_synthetic_data.qmd#generate-sessions) —
+  `dfs = [generate_session(i, ...) for i in range(n_sessions)]` generates
+  all sessions in a single line.
+- [GLM-HMM — Build GLM-HMM inputs](02_glm_hmm.qmd#build-glm-hmm-inputs) —
+  `sum(len(y) for y in true_choices)` (a *generator expression*, closely
+  related to a comprehension) counts the total number of trials across
+  sessions.
+
+
+## Classes and methods
+
+A **class** is a blueprint that bundles data (called *attributes*) and
+functions (called *methods*) into a single object.  You create an
+*instance* of a class by calling it like a function, then use dot notation
+to access its attributes and methods.
+
+```python
+class Dog:
+    def __init__(self, name, age):
+        self.name = name      # attribute
+        self.age = age         # attribute
+
+    def bark(self):            # method
+        return f"{self.name} says woof!"
+
+my_dog = Dog("Bella", 3)      # create an instance
+print(my_dog.name)             # access an attribute  → "Bella"
+print(my_dog.bark())           # call a method        → "Bella says woof!"
+```
+
+`__init__` is a special method that runs when you create a new instance —
+it sets up the object's initial state.  `self` refers to the instance
+itself, so `self.name = name` stores the argument as an attribute you can
+use later.
+
+You'll often use classes written by libraries rather than defining your own.
+The pattern is always the same: create an object, then call its methods:
+
+```python
+# create an HMM object with specific settings
+model = ssm.HMM(K, obs_dim, input_dim, ...)
+
+# call the .fit() method to train it on data
+fit_ll = model.fit(true_choices, inputs=inpts, method="em", ...)
+
+# access the .observations attribute, then its .params attribute
+weights = model.observations.params
+```
+
+**Used in:**
+
+- [GLM-HMM — Fit models](02_glm_hmm.qmd#fit-models-with-varying-numbers-of-states) —
+  `ssm.HMM(K, obs_dim, input_dim, ...)` creates an HMM instance, then
+  `glmhmm.fit(true_choices, inputs=inpts, ...)` trains it.  After fitting,
+  `glmhmm.observations.params` accesses the learned GLM weights.
+- [GLM-HMM — Posterior state probabilities](02_glm_hmm.qmd#posterior-state-probabilities-with-choice-rasters) —
+  `glmhmm.expected_states(data=y, input=x)` calls a method that returns the
+  posterior probability of each hidden state on every trial.
+- [Model Comparison — Overlaid predictions](04_model_comparison.qmd#overlaid-predictions-on-an-example-session) —
+  `glmhmm_full.observations.params` chains attribute access: first the
+  `.observations` object, then its `.params` array containing the fitted
+  weights.
+
+
+---
+
+
+# Mathematics and machine learning fundamentals
+
+## Log-likelihood
+
+The **likelihood** of a model is the probability it assigns to the observed
+data given its parameters.  Because multiplying many small probabilities
+together quickly produces tiny numbers, we take the logarithm, giving the
+**log-likelihood** (LL):
+
+$$
+\text{LL} = \sum_{t=1}^{T} \log P(y_t \mid \theta)
+$$
+
+where $y_t$ is the observed outcome on trial $t$ and $\theta$ are the model
+parameters.  A *higher* log-likelihood means the model predicts the data
+better.
+
+For a binary choice (Left vs Right), each trial's contribution is:
+
+$$
+\log P(y_t \mid \theta) = y_t \log \hat{p}_t + (1 - y_t) \log(1 - \hat{p}_t)
+$$
+
+where $\hat{p}_t$ is the model's predicted probability of choosing Right
+and $y_t \in \{0, 1\}$.  When we divide by the number of trials and convert
+from *nats* (natural log) to *bits* (dividing by $\ln 2$), we get
+**bits per trial** — a normalised score that is comparable across datasets
+of different sizes.
+
+**Used in:**
+
+- [GLM-HMM — Fit models](02_glm_hmm.qmd#fit-models-with-varying-numbers-of-states) —
+  `ll_bits = fit_ll[-1] / (total_trials * np.log(2))` converts the
+  final EM log-likelihood to bits per trial.
+- [Q-Learning — Q-learning model](03_qlearning.qmd#q-learning-model) —
+  the inner loop accumulates `nll -= np.log(pR) if choices[t] == 1 else np.log(1 - pR)`,
+  which is the negative of the equation above.
+- [Model Comparison — Scoring](04_model_comparison.qmd#cross-validation-strategy) —
+  both models are compared using this same bits-per-trial metric on
+  held-out data.
+
+
+## The softmax function
+
+The **softmax** function converts a vector of real-valued scores (often
+called *logits*) into probabilities that sum to one:
+
+$$
+P(i) = \frac{\exp(z_i)}{\sum_j \exp(z_j)}
+$$
+
+For the special case of two alternatives (Left and Right) with values
+$V_L$ and $V_R$, this simplifies to the **logistic (sigmoid)** function:
+
+$$
+P(R) = \frac{1}{1 + \exp(-(V_R - V_L))}
+$$
+
+This is an S-shaped curve: when $V_R \gg V_L$ the probability approaches 1;
+when $V_R \ll V_L$ it approaches 0; when they are equal it is exactly 0.5.
+
+The softmax is how both the Q-learning and GLM-HMM models convert internal
+quantities into choice probabilities.
+
+**Used in:**
+
+- [Q-Learning — Q-learning model](03_qlearning.qmd#q-learning-model) —
+  `pR = 1.0 / (1.0 + np.exp(-logit_pR[t]))` where `logit_pR[t] = v_r - v_l`.
+  This is the binary softmax in the equation above.
+- [GLM-HMM](02_glm_hmm.qmd) — each hidden state has its own logistic
+  regression (softmax with two categories) that maps the design matrix to
+  $P(R)$.  The `ssm` library computes this internally via the
+  `"input_driven_obs"` observation model.
+- [Model Comparison — Overlaid predictions](04_model_comparison.qmd#overlaid-predictions-on-an-example-session) —
+  `pR_per_state = 1.0 / (1.0 + np.exp(-logits_per_state))` applies the
+  sigmoid to the GLM-HMM's per-state logits.
+
+
+## Cross-validation
+
+When we fit a model to data, it will always look good on the data it was
+trained on — it may have simply memorised the noise.
+**Cross-validation** (CV) tests how well a model *generalises* to unseen
+data.
+
+The most common scheme is **K-fold cross-validation**:
+
+1. Split the data into $K$ equally-sized *folds*.
+2. For each fold $k$:
+   a. **Train** the model on all data *except* fold $k$.
+   b. **Test** (score) the model on fold $k$ alone.
+3. Average the test scores across all $K$ folds.
+
+```
+Fold 1:  [ TEST ] [ train ] [ train ] [ train ] [ train ]
+Fold 2:  [ train ] [ TEST ] [ train ] [ train ] [ train ]
+Fold 3:  [ train ] [ train ] [ TEST ] [ train ] [ train ]
+Fold 4:  [ train ] [ train ] [ train ] [ TEST ] [ train ]
+Fold 5:  [ train ] [ train ] [ train ] [ train ] [ TEST ]
+```
+
+A model with a higher cross-validated score is expected to make better
+predictions on new data.  This is particularly important when comparing
+models of different complexity (e.g. GLM-HMM with $K=1$ vs $K=4$): more
+complex models can always fit the training data better, but CV reveals
+whether that extra complexity actually helps on unseen trials.
+
+In this project we use a **within-session** variant: fold assignments are
+made *within* each session rather than splitting whole sessions apart.  This
+ensures every fold's test set spans all sessions and that temporal structure
+is preserved.
+
+**Used in:**
+
+- [Q-Learning — Cross-validated log-likelihood](03_qlearning.qmd#cross-validated-log-likelihood) —
+  `KFold(n_splits=5, shuffle=True, random_state=0)` splits sessions into
+  5 folds and evaluates the Q-learning model on each held-out fold.
+- [Model Comparison — Within-session cross-validation masks](04_model_comparison.qmd#within-session-cross-validation-masks) —
+  `make_within_session_cv_masks(...)` assigns individual trials within each
+  session to folds, so temporal ordering is maintained.
+- [Model Comparison — Run cross-validation](04_model_comparison.qmd#run-cross-validation) —
+  the outer loop `for cv_i in range(num_folds):` repeats the full
+  GLM-HMM and Q-learning fit-and-score pipeline for each fold, producing
+  the per-fold comparison shown in the results.
