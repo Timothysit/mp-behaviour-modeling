@@ -1,14 +1,22 @@
 [project]
 name = "mp-behaviour-modeling"
 version = "0.1.0"
-description = "Add your description here"
+description = "Modelling behaviour in matching pennies — GLM-HMM and Q-learning walkthrough"
 requires-python = ">=3.10"
 dependencies = [
     "cython>=3.2.5",
     "jupyter>=1.1.1",
     "matplotlib>=3.10.9",
-    "numpy>=2.2.6",
+    "numpy>=1.26,<2",      # ssm is not NumPy-2 compatible
     "pandas>=2.3.3",
     "scikit-learn>=1.7.2",
     "scipy>=1.15.3",
+    "ssm",
+    "marimo",
 ]
+
+[tool.uv.sources]
+ssm = { git = "https://github.com/lindermanlab/ssm" }
+
+[tool.uv]
+no-build-isolation-package = ["ssm"]
