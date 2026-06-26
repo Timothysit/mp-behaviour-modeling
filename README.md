@@ -3,14 +3,23 @@
 A Quarto website walking through behavioural models fit to matching pennies data.
 Notebooks cover synthetic data generation, GLM-HMM, Q-learning, and model comparison.
 
-## Setup (macOS)
+## Setup (macOS — Apple Silicon and Intel)
 
 ### Prerequisites
+
+**Xcode Command Line Tools** — required to compile `ssm`'s Cython extensions:
+```bash
+xcode-select --install
+```
 
 **[Homebrew](https://brew.sh)** (if not already installed):
 ```bash
 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
 ```
+
+> On Apple Silicon (M-chip) Macs, Homebrew installs to `/opt/homebrew`. The installer
+> will prompt you to add it to your PATH — follow those instructions before continuing.
+> On Intel Macs it installs to `/usr/local` and no extra PATH step is needed.
 
 **[uv](https://docs.astral.sh/uv/)** — Python package manager:
 ```bash
